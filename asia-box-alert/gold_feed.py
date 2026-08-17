@@ -3,13 +3,14 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
-from datetime import datetime
+from datetime import datetime, time, timedelta
 import json
 from typing import Any
 from urllib.error import URLError
 from urllib.request import Request, urlopen
 
 from tzutil import BEIJING
+
 UA = {"User-Agent": "AsiaBoxAlert/1.0"}
 
 
@@ -31,7 +32,7 @@ class Snapshot:
     warning: str | None = None
 
 
-def _get_json(url: str, timeout: float = 12) -> Any:
+def _get_json(url: str, timeout: float = 8) -> Any:
     req = Request(url, headers=UA)
     try:
         with urlopen(req, timeout=timeout) as resp:
@@ -87,11 +88,22 @@ def shift_bars(bars: list[Bar], offset: float) -> list[Bar]:
     ]
 
 
+def asia_session_date(now: datetime | None = None):
+    """Asia box belongs to the session that started at 08:00, even after midnight."""
+    now = now or datetime.now(BEIJING)
+    if now.tzinfo is None:
+        now = now.replace(tzinfo=BEIJING)
+    else:
+        now = now.astimezone(BEIJING)
+    if now.time() < time(8, 0):
+        return (now - timedelta(days=1)).date()
+    return now.date()
+
+
 def asia_high_low(bars: list[Bar], day: datetime | None = None) -> tuple[float, float] | None:
     if not bars:
         return None
-    day = day or datetime.now(BEIJING)
-    d = day.date()
+    d = asia_session_date(day)
     highs: list[float] = []
     lows: list[float] = []
     for b in bars:

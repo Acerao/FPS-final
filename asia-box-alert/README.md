@@ -10,7 +10,17 @@ Windows 桌面小工具：实时拉黄金现货价，按 **A 震荡 / B 单边**
 2. 双击 `run.bat`
 3. 窗口保持打开；到点会弹 Windows 通知 + 响一声
 
-## 窗口一闪就关
+## 窗口变成 Python 的 >>> 
+
+不要在 `>>>` 里乱输入。先粘贴这三行启动（把路径改成你的文件夹）：
+
+```python
+import os, runpy
+os.chdir(r"D:\download\FPS-final-cursor-asia-box-scalp-playbook-dbcf\asia-box-alert")
+runpy.run_path("app.py", run_name="__main__")
+```
+
+或关掉窗口后，重新双击修好的 `run.bat`。
 
 不要关那个黑窗口。新的 `run.bat` 结束时会停住，并写出原因。
 

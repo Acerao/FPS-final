@@ -1,61 +1,51 @@
 @echo off
-setlocal EnableExtensions
 cd /d "%~dp0"
-title 亚盘盒子监测
-color 0A
-echo ========================================
-echo   亚盘盒子监测
-echo   %CD%
-echo ========================================
+title AsiaBox
+echo Starting Asia Box monitor...
+echo Folder: %CD%
 echo.
 
-if not exist "%~dp0app.py" (
-  echo [错误] 找不到 app.py
-  echo 请进入 asia-box-alert 文件夹后再运行。
+if not exist app.py (
+  echo ERROR: app.py not found in this folder.
   pause
   exit /b 1
 )
 
-where py >nul 2>&1
-if %errorlevel%==0 (
-  echo 使用: py -3
-  py -3 --version
-  echo.
-  echo 正在安装依赖...
-  py -3 -m pip install -r "%~dp0requirements.txt"
-  if errorlevel 1 goto PIPFAIL
-  echo.
-  echo 正在启动窗口...
-  py -3 "%~dp0app.py"
-  goto END
-)
-
-where python >nul 2>&1
-if %errorlevel%==0 (
-  echo 使用: python
-  python --version
-  echo.
-  echo 正在安装依赖...
-  python -m pip install -r "%~dp0requirements.txt"
-  if errorlevel 1 goto PIPFAIL
-  echo.
-  echo 正在启动窗口...
-  python "%~dp0app.py"
-  goto END
-)
-
-echo [错误] 没有找到 Python。
-echo 请安装 https://www.python.org/downloads/ 并勾选 Add python.exe to PATH
+py -3 --version >nul 2>&1
+if %errorlevel%==0 goto USEPY
+python --version >nul 2>&1
+if %errorlevel%==0 goto USEPYTHON
+echo ERROR: Python not found. Install Python 3.10+ from python.org
+echo and check "Add python.exe to PATH".
 pause
 exit /b 1
 
+:USEPY
+echo Using: py -3
+py -3 --version
+echo Installing packages...
+py -3 -m pip install -r requirements.txt
+if errorlevel 1 goto PIPFAIL
+echo Launching GUI...
+py -3 app.py
+goto END
+
+:USEPYTHON
+echo Using: python
+python --version
+echo Installing packages...
+python -m pip install -r requirements.txt
+if errorlevel 1 goto PIPFAIL
+echo Launching GUI...
+python app.py
+goto END
+
 :PIPFAIL
-echo.
-echo [错误] pip 安装失败，把上面文字截图发我。
+echo ERROR: pip install failed.
 pause
 exit /b 1
 
 :END
 echo.
-echo 程序已结束。
+echo Program ended.
 pause

@@ -4,10 +4,11 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 from datetime import datetime
+import json
 from typing import Any
+from urllib.error import URLError
+from urllib.request import Request, urlopen
 from zoneinfo import ZoneInfo
-
-import requests
 
 BEIJING = ZoneInfo("Asia/Shanghai")
 UA = {"User-Agent": "AsiaBoxAlert/1.0"}
@@ -32,9 +33,13 @@ class Snapshot:
 
 
 def _get_json(url: str, timeout: float = 12) -> Any:
-    r = requests.get(url, headers=UA, timeout=timeout)
-    r.raise_for_status()
-    return r.json()
+    req = Request(url, headers=UA)
+    try:
+        with urlopen(req, timeout=timeout) as resp:
+            raw = resp.read().decode("utf-8")
+    except URLError as exc:
+        raise RuntimeError(f"network error: {exc}") from exc
+    return json.loads(raw)
 
 
 def fetch_spot() -> tuple[float, str]:

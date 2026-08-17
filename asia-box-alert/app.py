@@ -312,3 +312,20 @@ if __name__ == "__main__":
         main()
     except KeyboardInterrupt:
         sys.exit(0)
+    except Exception:
+        import traceback
+
+        tb = traceback.format_exc()
+        log_path = ROOT / "error.log"
+        try:
+            log_path.write_text(tb, encoding="utf-8")
+        except OSError:
+            pass
+        print(tb)
+        print("错误已写入:", log_path)
+        if "--once" not in sys.argv:
+            try:
+                input("按回车退出...")
+            except EOFError:
+                pass
+        sys.exit(1)

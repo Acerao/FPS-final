@@ -10,7 +10,16 @@ Windows 桌面小工具：实时拉黄金现货价，按 **A 震荡 / B 单边**
 2. 双击 `run.bat`
 3. 窗口保持打开；到点会弹 Windows 通知 + 响一声
 
-也可命令行：
+## 窗口一闪就关
+
+不要关那个黑窗口。新的 `run.bat` 结束时会停住，并写出原因。
+
+常见原因：
+- 没装 Python，或没勾选 **Add python.exe to PATH**
+- 装的是微软商店空壳，请改用 python.org 正式版
+- 没在 `asia-box-alert` 文件夹里运行（外层目录双击会找不到 app.py）
+
+若仍失败，把黑窗口全文，或同目录 `error.log` 发给我。
 
 ```bat
 cd asia-box-alert

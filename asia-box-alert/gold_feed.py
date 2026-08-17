@@ -5,13 +5,18 @@ from __future__ import annotations
 from dataclasses import dataclass
 from datetime import datetime, time, timedelta
 import json
+import ssl
+import time as time_mod
 from typing import Any
 from urllib.error import URLError
 from urllib.request import Request, urlopen
 
 from tzutil import BEIJING
 
-UA = {"User-Agent": "AsiaBoxAlert/1.0"}
+UA = {
+    "User-Agent": "Mozilla/5.0 AsiaBoxAlert/1.1",
+    "Accept": "application/json",
+}
 
 
 @dataclass
@@ -32,14 +37,23 @@ class Snapshot:
     warning: str | None = None
 
 
+def _ssl_contexts():
+    yield ssl.create_default_context()
+    yield ssl._create_unverified_context()
+
+
 def _get_json(url: str, timeout: float = 8) -> Any:
-    req = Request(url, headers=UA)
-    try:
-        with urlopen(req, timeout=timeout) as resp:
-            raw = resp.read().decode("utf-8")
-    except URLError as exc:
-        raise RuntimeError(f"network error: {exc}") from exc
-    return json.loads(raw)
+    last: Exception | None = None
+    for ctx in _ssl_contexts():
+        for _ in range(2):
+            try:
+                req = Request(url, headers=UA)
+                with urlopen(req, timeout=timeout, context=ctx) as resp:
+                    return json.loads(resp.read().decode("utf-8"))
+            except Exception as exc:
+                last = exc
+                time_mod.sleep(0.3)
+    raise RuntimeError(f"network error: {last}") from last
 
 
 def fetch_spot() -> tuple[float, str]:
@@ -51,11 +65,22 @@ def fetch_spot() -> tuple[float, str]:
 
 
 def fetch_gc_bars(interval: str = "15m", range_: str = "5d") -> tuple[list[Bar], float]:
-    url = (
+    urls = [
         "https://query1.finance.yahoo.com/v8/finance/chart/GC=F"
-        f"?interval={interval}&range={range_}&includePrePost=true"
-    )
-    data = _get_json(url)
+        f"?interval={interval}&range={range_}&includePrePost=true",
+        "https://query2.finance.yahoo.com/v8/finance/chart/GC=F"
+        f"?interval={interval}&range={range_}&includePrePost=true",
+    ]
+    last_err: Exception | None = None
+    data = None
+    for url in urls:
+        try:
+            data = _get_json(url)
+            break
+        except Exception as exc:
+            last_err = exc
+    if data is None:
+        raise RuntimeError(f"yahoo bars unavailable: {last_err}") from last_err
     result = data["chart"]["result"][0]
     ts_list = result.get("timestamp") or []
     quote = result["indicators"]["quote"][0]
@@ -139,5 +164,5 @@ def fetch_snapshot() -> Snapshot:
     except Exception as exc:
         bars = []
         fut_last = None
-        warning = f"15 分钟K线暂不可用（{exc}），仅有现货价；请手动填写 ASIA_H / ASIA_L。"
+        warning = "K线暂时连不上（不影响现货刷新）。请手动填写 ASIA_H / ASIA_L。"
     return Snapshot(price=spot, source=spot_src, bars_15m=bars, futures_last=fut_last, warning=warning)

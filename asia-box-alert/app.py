@@ -126,6 +126,7 @@ class App:
         self.cached_adx = None
         self.cached_last_close = None
         self.cached_auto_box = None
+        self._bar_log = ""
 
         self.root = tk.Tk()
         self.root.title("亚盘盒子监测 · XAUUSD")
@@ -270,7 +271,11 @@ class App:
 
     def _fail_bars(self, err: str) -> None:
         self.bar_busy = False
-        self.append_log(f"K线刷新失败：{err}")
+        self.adx_var.set("ADX：K线暂不可用，现货仍在刷新")
+        msg = "K线暂不可用，请手动填 ASIA_H / ASIA_L（现货价不受影响）"
+        if msg != self._bar_log:
+            self._bar_log = msg
+            self.append_log(msg)
 
     def _apply_bars(self, snap, auto, adx, last_close) -> None:
         self.bar_busy = False
@@ -280,7 +285,8 @@ class App:
         self.cached_auto_box = auto
         if adx:
             self.adx_var.set(f"ADX {adx.adx:.1f}    +DI {adx.plus_di:.1f}    -DI {adx.minus_di:.1f}")
-        if snap.warning:
+        if snap.warning and snap.warning != self._bar_log:
+            self._bar_log = snap.warning
             self.append_log(snap.warning)
 
     def _apply_price(self, price, source, box, box_src, signal, now) -> None:

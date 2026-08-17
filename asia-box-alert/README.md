@@ -4,11 +4,15 @@ Windows 桌面小工具：实时拉黄金现货价，按 **A 震荡 / B 单边**
 
 不自动下单。价格来自公开现货接口，和 MT5 可能差几美元，**盒子建议对照你图上的 ASIA_H / ASIA_L 手动填一次**。
 
-## 怎么运行
+## 怎么运行（双击，不用打命令）
 
-1. 安装 [Python 3.10+](https://www.python.org/downloads/)，勾选 **Add python.exe to PATH**
-2. 双击 `run.bat`
-3. 窗口保持打开；到点会弹 Windows 通知 + 响一声
+1. 安装 [Python 3.10+](https://www.python.org/downloads/)，勾选 **Add python.exe to PATH**（只需一次）
+2. 打开 `asia-box-alert` 文件夹
+3. **双击 `open.vbs`**
+
+不要双击 `python.exe`，也不要双击 `app.py`。
+
+想放在桌面：再双击一次 `MakeDesktopShortcut.bat`，桌面会多出 **AsiaBox** 图标。
 
 ## 窗口变成 Python 的 >>> 
 

@@ -8,9 +8,8 @@ import json
 from typing import Any
 from urllib.error import URLError
 from urllib.request import Request, urlopen
-from zoneinfo import ZoneInfo
 
-BEIJING = ZoneInfo("Asia/Shanghai")
+from tzutil import BEIJING
 UA = {"User-Agent": "AsiaBoxAlert/1.0"}
 
 

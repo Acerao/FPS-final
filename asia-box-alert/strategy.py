@@ -4,9 +4,8 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 from datetime import datetime, time
-from zoneinfo import ZoneInfo
 
-BEIJING = ZoneInfo("Asia/Shanghai")
+from tzutil import BEIJING
 ASIA_START = time(8, 0)
 ASIA_END = time(14, 30)
 ENTRY_END = time(1, 0)  # next calendar day 01:00

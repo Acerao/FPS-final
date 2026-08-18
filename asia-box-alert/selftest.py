@@ -35,6 +35,47 @@ def run_selftest(popup: bool = False) -> int:
         else:
             fail += 1
 
+    class _Bar:
+        def __init__(self, o: float, h: float, l: float, c: float) -> None:
+            self.open = o
+            self.high = h
+            self.low = l
+            self.close = c
+
+    print("\n=== 高胜率确认K自测 ===")
+    m15_confirm_long = [
+        _Bar(4408, 4410, 4404, 4406),  # prev bearish
+        _Bar(4406, 4411, 4405, 4410),  # closed bullish engulf
+        _Bar(4410, 4412, 4409, 4411),  # forming
+    ]
+    m15_no_confirm = [
+        _Bar(4408, 4410, 4404, 4409),
+        _Bar(4409, 4410, 4407, 4408),
+        _Bar(4408, 4409, 4407, 4408),
+    ]
+    sig = evaluate(4375, box, AdxState(18, 20, 18), 4378, now=noon, recent_m15=m15_no_confirm, profile="high_winrate")
+    if sig.key == "hwr_wait_a_long_confirm":
+        print("[OK] 高胜率版无确认K不入场")
+        ok += 1
+    else:
+        print(f"[FAIL] 期望等待确认，得到 {sig.key}")
+        fail += 1
+    sig = evaluate(
+        4375,
+        box,
+        AdxState(18, 20, 18),
+        4378,
+        now=noon,
+        recent_m15=m15_confirm_long,
+        profile="high_winrate",
+    )
+    if sig.key == "a_buy":
+        print("[OK] 高胜率版有确认K才入场")
+        ok += 1
+    else:
+        print(f"[FAIL] 期望 a_buy，得到 {sig.key}")
+        fail += 1
+
     print("\n=== 大数据禁做自测 ===")
     fake_news = NewsStatus(
         in_blackout=True,

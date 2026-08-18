@@ -100,6 +100,7 @@ def build_dashboard(
     adx_tf: str = "M15",
     strategy: str = "asia_box",
     grid: GridState | None = None,
+    m15_bars: list[object] | None = None,
 ) -> Dashboard:
     now = beijing_now(now)
     news = news or get_news_status(now)
@@ -110,7 +111,8 @@ def build_dashboard(
     if strategy == "scale_grid":
         signal = evaluate_grid(price, grid, adx, now, news)
     else:
-        signal = evaluate(price, box, adx, m15_close, now=now, news=news)
+        profile = "high_winrate" if strategy == "asia_box_hwr" else "classic"
+        signal = evaluate(price, box, adx, m15_close, now=now, news=news, recent_m15=m15_bars, profile=profile)
 
     entry_ok = signal.key in ENTRY_KEYS and not news.in_blackout
 
@@ -167,8 +169,9 @@ def build_dashboard(
         lines.append("✓ 可提醒" if entry_ok else "观察中")
         indicators_text = "\n".join(lines)
     else:
+        strat_label = "亚盘盒子·高胜率" if strategy == "asia_box_hwr" else "亚盘盒子"
         indicators_text = (
-            f"策略 亚盘盒子  |  时段 {session}  |  日型 {regime}  |  位置 {zone}\n"
+            f"策略 {strat_label}  |  时段 {session}  |  日型 {regime}  |  位置 {zone}\n"
             f"盒子 {box_txt}\n"
             f"{kline_line}\n"
             f"ADX {adx_txt}  |  RSI(M15) {rsi_txt}  |  M15收盘 {m15_txt}\n"

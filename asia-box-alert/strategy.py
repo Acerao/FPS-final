@@ -22,6 +22,7 @@ PULLBACK_TOL = 3.0  # dollars from breakout level
 CHASE_PAD = 8.0
 SL_USD = 15.0
 TP_USD = 12.0  # 高胜率默认约 0.8R；想放大单笔可改回 22
+HWR_TP_USD = 10.0  # 高胜率版：牺牲盈亏比换命中率
 LOT = 0.02
 
 
@@ -50,6 +51,41 @@ class Signal:
     title: str
     message: str
     urgent: bool
+
+
+def _bar_attr(bar: object, name: str) -> float | None:
+    value = getattr(bar, name, None)
+    if value is None:
+        return None
+    try:
+        return float(value)
+    except (TypeError, ValueError):
+        return None
+
+
+def _m15_confirmation(recent_m15: list[object] | None, side: str) -> tuple[bool, str]:
+    """Need two closed M15 bars: [-3] and [-2] ([-1] is usually forming)."""
+    if not recent_m15 or len(recent_m15) < 3:
+        return False, "M15确认不足（至少 3 根）"
+    prev = recent_m15[-3]
+    cur = recent_m15[-2]
+    po, pc, ph, pl = (_bar_attr(prev, "open"), _bar_attr(prev, "close"), _bar_attr(prev, "high"), _bar_attr(prev, "low"))
+    co, cc, ch, cl = (_bar_attr(cur, "open"), _bar_attr(cur, "close"), _bar_attr(cur, "high"), _bar_attr(cur, "low"))
+    if None in (po, pc, ph, pl, co, cc, ch, cl):
+        return False, "M15确认字段缺失"
+
+    bull_engulf = pc < po and cc > co and cc >= po and co <= pc
+    bear_engulf = pc > po and cc < co and cc <= po and co >= pc
+    bullish_shift = cl > pl and cc > pc
+    bearish_shift = ch < ph and cc < pc
+
+    if side == "long":
+        ok = bull_engulf or bullish_shift
+        reason = "阳吞噬 / 更高低点确认" if ok else "等待阳吞噬或更高低点"
+        return ok, reason
+    ok = bear_engulf or bearish_shift
+    reason = "阴吞噬 / 更低高点确认" if ok else "等待阴吞噬或更低高点"
+    return ok, reason
 
 
 def beijing_now(now: datetime | None = None) -> datetime:
@@ -169,7 +205,11 @@ def evaluate(
     last_m15_close: float | None,
     now: datetime | None = None,
     news: "NewsStatus | None" = None,
+    recent_m15: list[object] | None = None,
+    profile: str = "classic",
 ) -> Signal:
+    strict_confirm = profile == "high_winrate"
+    tp_usd = HWR_TP_USD if strict_confirm else TP_USD
     status = session_status(now)
     if status == "SLEEP":
         return Signal("sleep", "OFF", "已过平仓时间", "01:45 后不再提醒新单，睡着不留仓。", False)
@@ -207,11 +247,21 @@ def evaluate(
                 True,
             )
         if abs(price - box.high) <= PULLBACK_TOL or (price <= box.high + PULLBACK_TOL and price >= box.high - PULLBACK_TOL):
+            if strict_confirm:
+                ok, why = _m15_confirmation(recent_m15, "long")
+                if not ok:
+                    return Signal(
+                        "hwr_wait_b_long_confirm",
+                        "B",
+                        "B 回踩到了，等多头确认K",
+                        f"上沿 {box.high:.2f} 附近已到，但{why}。暂不提醒入场。",
+                        False,
+                    )
             return Signal(
                 "b_long",
                 "B",
                 "B 做多回踩到了",
-                f"回踩上沿 {box.high:.2f}。Buy Limit {box.high:.0f}，SL {box.high - SL_USD:.0f}，TP {box.high + TP_USD:.0f}，手数 {LOT}。",
+                f"回踩上沿 {box.high:.2f}。Buy Limit {box.high:.0f}，SL {box.high - SL_USD:.0f}，TP {box.high + tp_usd:.0f}，手数 {LOT}。",
                 True,
             )
         return Signal(
@@ -232,11 +282,21 @@ def evaluate(
                 True,
             )
         if abs(price - box.low) <= PULLBACK_TOL:
+            if strict_confirm:
+                ok, why = _m15_confirmation(recent_m15, "short")
+                if not ok:
+                    return Signal(
+                        "hwr_wait_b_short_confirm",
+                        "B",
+                        "B 回踩到了，等空头确认K",
+                        f"下沿 {box.low:.2f} 附近已到，但{why}。暂不提醒入场。",
+                        False,
+                    )
             return Signal(
                 "b_short",
                 "B",
                 "B 做空回踩到了",
-                f"反弹下沿 {box.low:.2f}。Sell Limit {box.low:.0f}，SL {box.low + SL_USD:.0f}，TP {box.low - TP_USD:.0f}，手数 {LOT}。",
+                f"反弹下沿 {box.low:.2f}。Sell Limit {box.low:.0f}，SL {box.low + SL_USD:.0f}，TP {box.low - tp_usd:.0f}，手数 {LOT}。",
                 True,
             )
         return Signal(
@@ -252,19 +312,39 @@ def evaluate(
 
     if ranging or adx_val is None:
         if price >= box.upper_start:
+            if strict_confirm:
+                ok, why = _m15_confirmation(recent_m15, "short")
+                if not ok:
+                    return Signal(
+                        "hwr_wait_a_short_confirm",
+                        "A",
+                        "A 上沿到了，等空头确认K",
+                        f"价格在上沿区，但{why}。高胜率版先不挂空。",
+                        False,
+                    )
             return Signal(
                 "a_sell",
                 "A",
                 "A 上沿可挂空",
-                f"上沿区 {box.upper_start:.2f}–{box.high:.2f}。Sell Limit {box.high - 5:.0f}，SL {box.high - 5 + SL_USD:.0f}，TP {box.high - 5 - TP_USD:.0f}，手数 {LOT}。",
+                f"上沿区 {box.upper_start:.2f}–{box.high:.2f}。Sell Limit {box.high - 5:.0f}，SL {box.high - 5 + SL_USD:.0f}，TP {box.high - 5 - tp_usd:.0f}，手数 {LOT}。",
                 True,
             )
         if price <= box.lower_end:
+            if strict_confirm:
+                ok, why = _m15_confirmation(recent_m15, "long")
+                if not ok:
+                    return Signal(
+                        "hwr_wait_a_long_confirm",
+                        "A",
+                        "A 下沿到了，等多头确认K",
+                        f"价格在下沿区，但{why}。高胜率版先不挂多。",
+                        False,
+                    )
             return Signal(
                 "a_buy",
                 "A",
                 "A 下沿可挂多",
-                f"下沿区 {box.low:.2f}–{box.lower_end:.2f}。Buy Limit {box.low + 5:.0f}，SL {box.low + 5 - SL_USD:.0f}，TP {box.low + 5 + TP_USD:.0f}，手数 {LOT}。",
+                f"下沿区 {box.low:.2f}–{box.lower_end:.2f}。Buy Limit {box.low + 5:.0f}，SL {box.low + 5 - SL_USD:.0f}，TP {box.low + 5 + tp_usd:.0f}，手数 {LOT}。",
                 True,
             )
         return Signal(

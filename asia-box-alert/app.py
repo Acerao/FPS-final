@@ -141,13 +141,14 @@ class App:
             strat,
             self.strategy_var,
             "asia_box",
+            "asia_box_hwr",
             "scale_grid",
             command=lambda _: self.on_strategy_change(),
         )
         self.strategy_box.pack(side="left", padx=6)
         tk.Label(
             strat,
-            text="asia_box=亚盘盒子  |  scale_grid=等距网格(回弹全平)",
+            text="asia_box=亚盘盒子 | asia_box_hwr=高胜率版 | scale_grid=等距网格",
             fg=muted,
             bg="#111318",
             font=("Microsoft YaHei UI", 8),
@@ -281,7 +282,12 @@ class App:
     def on_strategy_change(self) -> None:
         self.cfg["strategy"] = self.strategy_var.get()
         save_config(self.cfg)
-        self.append_log("已切换策略：" + ("亚盘盒子" if self.cfg["strategy"] == "asia_box" else "等距网格"))
+        labels = {
+            "asia_box": "亚盘盒子",
+            "asia_box_hwr": "亚盘盒子·高胜率",
+            "scale_grid": "等距网格",
+        }
+        self.append_log("已切换策略：" + labels.get(self.cfg["strategy"], self.cfg["strategy"]))
         if self.last_price is not None:
             self._render(self.last_price, self.cached_price_source or "现货", beijing_now())
 
@@ -352,6 +358,7 @@ class App:
             getattr(self, "cached_adx_tf", "M15"),
             self.strategy_var.get() or "asia_box",
             self._grid_state(),
+            self.cached_bars,
         )
 
         delta = ""
@@ -434,7 +441,7 @@ class App:
             self.root.after(
                 0,
                 lambda: self._apply_bars(
-                    pack.source, pack.note, auto, adx, rsi, last_close, pack.adx_tf
+                    pack.source, pack.note, auto, adx, rsi, last_close, pack.adx_tf, pack.bars
                 ),
             )
         except Exception as exc:
@@ -465,12 +472,13 @@ class App:
         self.news_busy = False
         self.news_var.set(f"📰 日历拉取失败：{err}")
 
-    def _apply_bars(self, bar_src, bar_note, auto, adx, rsi, last_close, adx_tf="M15") -> None:
+    def _apply_bars(self, bar_src, bar_note, auto, adx, rsi, last_close, adx_tf="M15", bars=None) -> None:
         self.bar_busy = False
         self.cached_adx = adx
         self.cached_rsi = rsi
         self.cached_last_close = last_close
         self.cached_auto_box = auto
+        self.cached_bars = list(bars or [])
         self.cached_bar_src = bar_src
         self.cached_bar_note = bar_note
         self.cached_adx_tf = adx_tf
@@ -612,6 +620,9 @@ def print_once() -> None:
         pack.source,
         pack.note,
         pack.adx_tf,
+        cfg.get("strategy", "asia_box"),
+        None,
+        pack.bars,
     )
     print(dash.indicators_text)
     print(dash.news.summary)

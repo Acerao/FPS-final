@@ -907,14 +907,42 @@ class App:
         ov = dash.line_overlay or {}
         up = ov.get("upper_fit")
         dn = ov.get("lower_fit")
+        line_dash = (4, 3) if not descending else ()
+        line_color = "#6e7681" if not descending else "#58a6ff"
         if up:
             y1 = py(up[0] * 0 + up[1])
             y2 = py(up[0] * (len(bars) - 1) + up[1])
-            self.chart.create_line(px(0), y1, px(len(bars) - 1), y2, fill="#58a6ff", width=2)
+            kw = {"fill": line_color, "width": 2}
+            if line_dash:
+                kw["dash"] = line_dash
+            self.chart.create_line(px(0), y1, px(len(bars) - 1), y2, **kw)
+            up_now = ov.get("up_now")
+            if up_now is not None:
+                self.chart.create_text(
+                    left + 8,
+                    py(float(up_now)) - 2,
+                    anchor="sw",
+                    fill=line_color,
+                    text=f"压力 {float(up_now):.1f}",
+                    font=("Microsoft YaHei UI", 8),
+                )
         if dn:
             y1 = py(dn[0] * 0 + dn[1])
             y2 = py(dn[0] * (len(bars) - 1) + dn[1])
-            self.chart.create_line(px(0), y1, px(len(bars) - 1), y2, fill="#58a6ff", width=2)
+            kw = {"fill": line_color, "width": 2}
+            if line_dash:
+                kw["dash"] = line_dash
+            self.chart.create_line(px(0), y1, px(len(bars) - 1), y2, **kw)
+            dn_now = ov.get("dn_now")
+            if dn_now is not None:
+                self.chart.create_text(
+                    left + 8,
+                    py(float(dn_now)) + 10,
+                    anchor="nw",
+                    fill=line_color,
+                    text=f"支撑 {float(dn_now):.1f}",
+                    font=("Microsoft YaHei UI", 8),
+                )
         box_low = ov.get("box_low")
         box_high = ov.get("box_high")
         if box_low is not None and box_high is not None:

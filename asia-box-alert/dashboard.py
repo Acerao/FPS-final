@@ -289,13 +289,24 @@ def _line_mode_signal(price: float, bars: list[object], lot: float) -> tuple[Sig
                          f"压力 {up_now:.1f}  支撑 {dn_now:.1f}  当前 {close:.1f}。通道未破，不追。", False)
             bias = "震荡等待"
     else:
-        sig = Signal("line_wait", "LINES", "通道不明确，观察",
-                     f"K线不足或非下降通道，暂不画线。当前价 {close:.1f}。", False)
+        sig = Signal(
+            "line_wait",
+            "LINES",
+            "通道不明确，观察",
+            f"蓝线只是最近两点连线（上=压力 {up_now:.1f}，下=支撑 {dn_now:.1f}）。"
+            f"当前不是下降通道，收盘跌破下蓝线也不做空。现价 {close:.1f}，先观察。",
+            False,
+        )
         bias = "观察"
 
     overlay = {
         "upper_fit": up_line,
         "lower_fit": dn_line,
+        "up_now": up_now,
+        "dn_now": dn_now,
+        "descending": descending,
+        "broke_up": broke_up,
+        "broke_dn": broke_dn,
         "box_low": box_low,
         "box_high": box_high,
         "bias": bias,

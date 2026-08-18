@@ -359,8 +359,55 @@ class App:
             h = self.root.winfo_height()
         except Exception:
             return
-        compact = w < 360 or h < 240
-        self._set_compact_mode(compact)
+        # 最小化状态由 Unmap/Map 处理（小框显示金价），这里不做 layout 干预
+        try:
+            if self.root.state() == "iconic":
+                return
+        except Exception:
+            pass
+
+        # 真正极端小：才启用“只显示金价”的极简模式
+        compact = w < 300 or h < 200
+        if compact:
+            self._set_compact_mode(True)
+            return
+
+        if self._compact_mode:
+            self._set_compact_mode(False)
+
+        # 常规缩放：根据窗口尺寸动态缩字体/换行宽度/图表高度，避免界面拉长挤爆
+        scale = min(w / 700.0, h / 820.0, 1.0)
+        scale = max(0.58, scale)  # 下限避免字体太小
+        self._apply_responsive_scale(scale)
+
+    def _apply_responsive_scale(self, scale: float) -> None:
+        """根据窗口缩放比例调整关键控件尺寸（字体/换行/图表高度）。"""
+        # 字体字号（使用整数像素）
+        price_big = max(14, int(28 * scale))
+        mode_size = max(10, int(15 * scale))
+        tick_size = max(8, int(10 * scale))
+        ui_size = max(8, int(10 * scale))
+        ui_small = max(7, int(9 * scale))
+        wrap = max(260, int(580 * scale))
+
+        # 价格/标题
+        self.price_label.configure(font=("Microsoft YaHei UI", price_big, "bold"))
+        self.tick_label.configure(font=("Microsoft YaHei UI", tick_size))
+        self.mode_label.configure(font=("Microsoft YaHei UI", mode_size, "bold"))
+        self.ind_label.configure(wraplength=wrap)
+        self.news_label.configure(wraplength=wrap)
+        self.msg_label.configure(wraplength=wrap)
+
+        # Canvas 高度（宽由 pack fill="x" 控制）
+        canvas_h = max(80, int(230 * scale))
+        self.chart.configure(height=canvas_h)
+
+        # 底部日志：偏小高度会挤，适当缩短；极端情况由 compact mode 处理
+        try:
+            log_h = max(4, int(7 * scale))
+            self.log.configure(height=log_h)
+        except Exception:
+            pass
 
     def _set_compact_mode(self, compact: bool) -> None:
         if compact == self._compact_mode:

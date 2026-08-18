@@ -60,20 +60,26 @@ def run_selftest(popup: bool = False) -> int:
     else:
         print(f"[FAIL] 期望等待确认，得到 {sig.key}")
         fail += 1
-    sig = evaluate(
-        4375,
-        box,
-        AdxState(18, 20, 18),
-        4378,
-        now=noon,
-        recent_m15=m15_confirm_long,
-        profile="high_winrate",
-    )
+    sig = evaluate(4375, box, AdxState(18, 20, 18), 4378, now=noon, recent_m15=m15_confirm_long, profile="high_winrate")
     if sig.key == "a_buy":
         print("[OK] 高胜率版有确认K才入场")
         ok += 1
     else:
         print(f"[FAIL] 期望 a_buy，得到 {sig.key}")
+        fail += 1
+    sig = evaluate(4379, box, AdxState(18, 20, 18), 4378, now=noon, recent_m15=m15_confirm_long, profile="high_winrate")
+    if sig.key == "a_buy_left":
+        print("[OK] 高胜率版离开挂多位后不追")
+        ok += 1
+    else:
+        print(f"[FAIL] 期望 a_buy_left，得到 {sig.key} {sig.message}")
+        fail += 1
+    sig = evaluate(4395, box, AdxState(18, 20, 18), 4390, now=noon, profile="high_winrate")
+    if sig.key == "a_mid" and "撤掉" in sig.message:
+        print("[OK] 高胜率版中间禁区提示撤未成交限价")
+        ok += 1
+    else:
+        print(f"[FAIL] 中间禁区文案，得到 {sig.key} {sig.message}")
         fail += 1
 
     print("\n=== 冲刺版自测 ===")

@@ -431,9 +431,22 @@ def build_dashboard(
                 True,
             )
         elif hwr_is_entry:
-            signal = hwr_sig
+            signal = Signal(
+                hwr_sig.key,
+                hwr_sig.mode,
+                f"高胜率：{hwr_sig.title}",
+                f"[高胜率] {hwr_sig.message}\n\n[画线观察] {line_sig.title}。两套都在跑，先按高胜率限价，不成交不要追。",
+                True,
+            )
         elif line_is_entry:
-            signal = line_sig
+            signal = Signal(
+                line_sig.key,
+                line_sig.mode,
+                f"画线：{line_sig.title}",
+                f"[画线] {line_sig.message}\n\n[高胜率不同意见] {hwr_sig.title}。{hwr_sig.message}\n"
+                f"高胜率这时不做。画线那笔也是限价回踩，现价没回到入场位就不要市价追。",
+                True,
+            )
         else:
             # 都未入场：优先返回高胜率提示（若需要也能看到画线提示）
             signal = Signal(

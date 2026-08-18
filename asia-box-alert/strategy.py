@@ -111,14 +111,36 @@ def risk_dollars(lot: float | None = None, sl_usd: float = SL_USD) -> float:
     return sl_usd * dollars_per_dollar(lot)
 
 
-def _order_line(side: str, entry: float, sl: float, tp: float, lot: float) -> str:
+def _order_line(side: str, entry: float, sl: float, tp: float, lot: float, price: float | None = None) -> str:
     kind = "Buy Limit" if side == "long" else "Sell Limit"
     risk = abs(entry - sl) * dollars_per_dollar(lot)
     reward = abs(tp - entry) * dollars_per_dollar(lot)
-    return (
+    line = (
         f"{kind} {entry:.0f}，SL {sl:.0f}，TP {tp:.0f}，手数 {clamp_lot(lot)}"
         f"（亏约 ${risk:.0f} / 盈约 ${reward:.0f}）"
     )
+    if price is None:
+        return line
+    diff = price - entry
+    if side == "long":
+        if diff > PULLBACK_TOL:
+            return (
+                f"这是限价，不是市价。现价 {price:.2f} 已高于入场位 ${diff:.1f}，"
+                f"只有回到 {entry:.0f} 才挂/才成交，不要追。\n"
+                + line
+            )
+        if abs(diff) <= 1.5:
+            return f"现价 {price:.2f} 已靠近入场位，可挂 {kind} {entry:.0f}（别市价追）。\n" + line
+        return f"现价 {price:.2f}，挂 {kind} {entry:.0f} 等回踩，不成交就不做。\n" + line
+    if diff < -PULLBACK_TOL:
+        return (
+            f"这是限价，不是市价。现价 {price:.2f} 已低于入场位 ${abs(diff):.1f}，"
+            f"只有反抽到 {entry:.0f} 才挂/才成交，不要追。\n"
+            + line
+        )
+    if abs(diff) <= 1.5:
+        return f"现价 {price:.2f} 已靠近入场位，可挂 {kind} {entry:.0f}（别市价追）。\n" + line
+    return f"现价 {price:.2f}，挂 {kind} {entry:.0f} 等反抽，不成交就不做。\n" + line
 
 
 def beijing_now(now: datetime | None = None) -> datetime:
@@ -304,7 +326,7 @@ def evaluate(
                 "B 做多回踩到了",
                 "回踩上沿 "
                 + f"{box.high:.2f}。"
-                + _order_line("long", box.high, box.high - SL_USD, box.high + tp_usd, lot),
+                + _order_line("long", box.high, box.high - SL_USD, box.high + tp_usd, lot, price),
                 True,
             )
         return Signal(
@@ -341,7 +363,7 @@ def evaluate(
                 "B 做空回踩到了",
                 "反弹下沿 "
                 + f"{box.low:.2f}。"
-                + _order_line("short", box.low, box.low + SL_USD, box.low - tp_usd, lot),
+                + _order_line("short", box.low, box.low + SL_USD, box.low - tp_usd, lot, price),
                 True,
             )
         return Signal(
@@ -375,12 +397,21 @@ def evaluate(
                         f"价格在上沿区，但{why}。高胜率版先不挂空。",
                         False,
                     )
+            sell_entry = box.high - 5
+            if price < sell_entry - PULLBACK_TOL:
+                return Signal(
+                    "a_sell_left",
+                    "A",
+                    "上沿限价已离开，不追",
+                    f"现价 {price:.2f} 已离开挂空位 {sell_entry:.0f}。未成交的 Sell Limit 应撤掉，不要市价追空。",
+                    False,
+                )
             return Signal(
                 "a_sell",
                 "A",
                 "A 上沿可挂空",
                 f"上沿区 {box.upper_start:.2f}–{box.high:.2f}。"
-                + _order_line("short", box.high - 5, box.high - 5 + SL_USD, box.high - 5 - tp_usd, lot),
+                + _order_line("short", sell_entry, sell_entry + SL_USD, sell_entry - tp_usd, lot, price),
                 True,
             )
         if price <= box.lower_end:
@@ -394,19 +425,30 @@ def evaluate(
                         f"价格在下沿区，但{why}。高胜率版先不挂多。",
                         False,
                     )
+            buy_entry = box.low + 5
+            if price > buy_entry + PULLBACK_TOL:
+                return Signal(
+                    "a_buy_left",
+                    "A",
+                    "下沿限价已离开，不追",
+                    f"现价 {price:.2f} 已离开挂多位 {buy_entry:.0f}。未成交的 Buy Limit 应撤掉，不要市价追多。",
+                    False,
+                )
             return Signal(
                 "a_buy",
                 "A",
                 "A 下沿可挂多",
                 f"下沿区 {box.low:.2f}–{box.lower_end:.2f}。"
-                + _order_line("long", box.low + 5, box.low + 5 - SL_USD, box.low + 5 + tp_usd, lot),
+                + _order_line("long", buy_entry, buy_entry - SL_USD, buy_entry + tp_usd, lot, price),
                 True,
             )
         return Signal(
             "a_mid",
             "A",
             "中间禁区，空仓",
-            f"现价 {price:.2f} 在 {box.lower_end:.2f}–{box.upper_start:.2f}，按规则不交易。",
+            f"现价 {price:.2f} 在 {box.lower_end:.2f}–{box.upper_start:.2f}。"
+            f"高胜率版只做盒子上下沿，中间按规则不交易。"
+            f"若刚才挂了未成交的 Limit，撤掉，不要拿旧入场价去追现价。",
             False,
         )
 

@@ -146,6 +146,49 @@ _pullback_state: dict = {}
 _pullback_clock = [0]
 
 
+def _line_sl_tp_from_levels(
+    side: str,
+    entry: float,
+    up_now: float,
+    dn_now: float,
+    box_low: float,
+    box_high: float,
+    hi_pts: list[tuple[int, float]],
+    lo_pts: list[tuple[int, float]],
+) -> tuple[float, float, str]:
+    """
+    用“突破位/压力支撑位”给大熊画线单定 SL/TP，而不是固定美元。
+    返回: (sl, tp, reason)
+    """
+    channel_w = max(abs(up_now - dn_now), 6.0)
+    pad = 0.6  # 结构位下上方缓冲，避免贴太死
+
+    if side == "long":
+        support_candidates = [dn_now, box_low] + [p for _, p in lo_pts[-4:] if p < entry]
+        support = min(support_candidates) if support_candidates else entry - channel_w * 0.5
+        sl = min(entry - 3.0, support - pad)
+
+        resist_above = [p for _, p in hi_pts[-6:] if p > entry]
+        resist_zone = min(resist_above) if resist_above else max(up_now, box_high, entry + channel_w)
+        tp_struct = resist_zone - pad
+        tp_by_rr = entry + max((entry - sl) * 1.2, 6.0)
+        tp = max(tp_struct, tp_by_rr)
+        reason = f"SL参考支撑 {support:.1f} 下方；TP参考压力 {resist_zone:.1f}"
+        return sl, tp, reason
+
+    resist_candidates = [up_now, box_high] + [p for _, p in hi_pts[-4:] if p > entry]
+    resistance = max(resist_candidates) if resist_candidates else entry + channel_w * 0.5
+    sl = max(entry + 3.0, resistance + pad)
+
+    support_below = [p for _, p in lo_pts[-6:] if p < entry]
+    support_zone = max(support_below) if support_below else min(dn_now, box_low, entry - channel_w)
+    tp_struct = support_zone + pad
+    tp_by_rr = entry - max((sl - entry) * 1.2, 6.0)
+    tp = min(tp_struct, tp_by_rr)
+    reason = f"SL参考压力 {resistance:.1f} 上方；TP参考支撑 {support_zone:.1f}"
+    return sl, tp, reason
+
+
 def _line_mode_signal(price: float, bars: list[object], lot: float) -> tuple[Signal, dict]:
     """
     大熊式信号（修正正确版）：
@@ -182,9 +225,11 @@ def _line_mode_signal(price: float, bars: list[object], lot: float) -> tuple[Sig
     _pullback_clock[0] += 1
     pb = _pullback_state
     if broke_up:
-        pb.update({"side": "long", "entry": up_now, "sl": up_now - SL_USD, "tp": up_now + 18.0, "since": _pullback_clock[0]})
+        sl, tp, reason = _line_sl_tp_from_levels("long", up_now, up_now, dn_now, box_low, box_high, hi_pts, lo_pts)
+        pb.update({"side": "long", "entry": up_now, "sl": sl, "tp": tp, "reason": reason, "since": _pullback_clock[0]})
     elif broke_dn:
-        pb.update({"side": "short", "entry": dn_now, "sl": dn_now + SL_USD, "tp": dn_now - 18.0, "since": _pullback_clock[0]})
+        sl, tp, reason = _line_sl_tp_from_levels("short", dn_now, up_now, dn_now, box_low, box_high, hi_pts, lo_pts)
+        pb.update({"side": "short", "entry": dn_now, "sl": sl, "tp": tp, "reason": reason, "since": _pullback_clock[0]})
     if pb.get("since") and _pullback_clock[0] - pb["since"] > 20:
         pb.clear()
 
@@ -193,7 +238,7 @@ def _line_mode_signal(price: float, bars: list[object], lot: float) -> tuple[Sig
     tol_market = 1.5
 
     if pb.get("side"):
-        entry = pb["entry"]; sl = pb["sl"]; tp = pb["tp"]; pb_side = pb["side"]
+        entry = pb["entry"]; sl = pb["sl"]; tp = pb["tp"]; pb_side = pb["side"]; reason = pb.get("reason", "")
         diff = abs(close - entry)
         wait_bars = _pullback_clock[0] - pb["since"]
         if diff <= tol_pullback:
@@ -201,13 +246,15 @@ def _line_mode_signal(price: float, bars: list[object], lot: float) -> tuple[Sig
             if pb_side == "long":
                 msg = (f"压力变支撑，价格回踩到 {entry:.1f}，差 ${diff:.1f}\n"
                        + (f"可直接市价做多。SL {sl:.1f}，TP {tp:.1f}，手数 {lot:.2f}。"
-                          if market_ok else f"挂 Buy Limit {entry:.1f}，SL {sl:.1f}，TP {tp:.1f}，手数 {lot:.2f}。"))
+                          if market_ok else f"挂 Buy Limit {entry:.1f}，SL {sl:.1f}，TP {tp:.1f}，手数 {lot:.2f}。")
+                       + (f"\n{reason}" if reason else ""))
                 sig = Signal("line_long_call", "LINES", "画线做多：回踩到位", msg, True)
                 bias = "偏多·回踩触发"
             else:
                 msg = (f"支撑变压力，价格反抽到 {entry:.1f}，差 ${diff:.1f}\n"
                        + (f"可直接市价做空。SL {sl:.1f}，TP {tp:.1f}，手数 {lot:.2f}。"
-                          if market_ok else f"挂 Sell Limit {entry:.1f}，SL {sl:.1f}，TP {tp:.1f}，手数 {lot:.2f}。"))
+                          if market_ok else f"挂 Sell Limit {entry:.1f}，SL {sl:.1f}，TP {tp:.1f}，手数 {lot:.2f}。")
+                       + (f"\n{reason}" if reason else ""))
                 sig = Signal("line_short_call", "LINES", "画线做空：反抽到位", msg, True)
                 bias = "偏空·反抽触发"
             plan = {"side": pb_side, "entry": entry, "sl": sl, "tp": tp}

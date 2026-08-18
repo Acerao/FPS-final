@@ -405,100 +405,183 @@ def _swing_lo(bars, i):
     return bars[i].low <= bars[i-1].low and bars[i].low <= bars[i+1].low
 
 
-def simulate_lines(bars: list, lot: float = 0.05) -> list[Trade]:
-    """画线模式回测：用滚动窗口拟合压力/支撑线，破线后回踩入场。"""
+def _two_point_line(p1: tuple[int, float], p2: tuple[int, float]) -> tuple[float, float]:
+    """斜率截距：过两点的直线（大熊手画只连2-3个明显高/低点）。"""
+    x1, y1 = p1
+    x2, y2 = p2
+    a = (y2 - y1) / (x2 - x1) if x2 != x1 else 0.0
+    b = y1 - a * x1
+    return a, b
+
+
+def _find_major_swings(bars: list, kind: str, lookback: int = 80) -> list[tuple[int, float]]:
+    """找最近几个明显的摆动高/低点（大熊式：只取最显眼的2-4个）。"""
+    pts: list[tuple[int, float]] = []
+    n = len(bars)
+    # 用比较宽的左右窗口找真正明显的高低点（避免噪音）
+    for i in range(max(2, n - lookback), n - 2):
+        left = bars[i - 2: i]
+        right = bars[i + 1: i + 3]
+        if not left or not right:
+            continue
+        val = getattr(bars[i], kind)
+        lvals = [getattr(b, kind) for b in left]
+        rvals = [getattr(b, kind) for b in right]
+        if kind == "high":
+            if val >= max(lvals) and val >= max(rvals):
+                # 额外要求比前后各1根都明显高（过滤微小波动）
+                if i >= 1 and i < n - 1:
+                    if val >= bars[i-1].high + 0.5 or val >= bars[i+1].high + 0.5:
+                        pts.append((i, float(val)))
+        else:
+            if val <= min(lvals) and val <= min(rvals):
+                if i >= 1 and i < n - 1:
+                    if val <= bars[i-1].low - 0.5 or val <= bars[i+1].low - 0.5:
+                        pts.append((i, float(val)))
+    # 去重：相邻5根内只取最极端的一个
+    merged: list[tuple[int, float]] = []
+    for p in pts:
+        if merged and abs(p[0] - merged[-1][0]) <= 5:
+            if kind == "high":
+                merged[-1] = p if p[1] > merged[-1][1] else merged[-1]
+            else:
+                merged[-1] = p if p[1] < merged[-1][1] else merged[-1]
+        else:
+            merged.append(p)
+    return merged[-4:]  # 只取最近4个
+
+
+def simulate_lines_v2(bars: list, lot: float = 0.05) -> list[Trade]:
+    """
+    正确还原大熊式画线回测：
+    1. 只连最近2-3个明显高点（下降压力线）/低点（下降支撑线）
+    2. H8 收盘突破压力线 → 等价格回踩旧压力线附近（压力变支撑）再入场
+    3. 入场用限价回踩，不追突破当根
+    4. 同理跌破支撑→等反抽再空
+    5. SL $15 / TP $18，手数可调
+    """
     lot = clamp_lot(lot)
     tp_usd = 18.0
-    window = 60
+    # 通道检测需要至少 lookback 根历史
+    lookback = 80
     trades: list[Trade] = []
     open_tr = None
+    # 突破后等待回踩的状态
+    pending_pullback = None  # ("long"/"short", entry_level, sl, tp, since_idx)
+    pullback_max_bars = 15   # 最多等15根H1，否则放弃
     day_trade_count: dict = defaultdict(int)
     day_loss_count: dict = defaultdict(int)
     day_pnl: dict[object, float] = defaultdict(float)
 
-    for idx in range(window, len(bars)):
+    for idx in range(lookback, len(bars)):
         b = bars[idx]
         t = b.ts.astimezone(BEIJING).time()
         day = session_date(b.ts)
+        is_entry_time = in_entry(t)
+        is_flat_time = (t >= FLAT_END and t < ASIA_START)
 
-        if day_trade_count[day] >= MAX_DAY_TRADES or day_loss_count[day] >= MAX_DAY_LOSSES:
-            if open_tr and (t >= FLAT_END and t < ASIA_START):
-                side, entry, sl, tp, ets, mfe_max, be = open_tr
-                trades.append(Trade(day, "LINES", side, entry, sl, tp, ets, b.ts, b.close, "日限平", "lines", lot))
-                open_tr = None
-            continue
-        if day_pnl[day] <= -MAX_DAY_LOSS_USD:
-            if open_tr:
-                side, entry, sl, tp, ets, mfe_max, be = open_tr
-                trades.append(Trade(day, "LINES", side, entry, sl, tp, ets, b.ts, b.close, "日损平", "lines", lot))
-                open_tr = None
-            continue
+        # ---- 日损/日限 ----
+        over_daily = (
+            day_trade_count[day] >= MAX_DAY_TRADES
+            or day_loss_count[day] >= MAX_DAY_LOSSES
+            or day_pnl[day] <= -MAX_DAY_LOSS_USD
+        )
 
+        # ---- 持仓管理 ----
         if open_tr:
             side, entry, sl, tp, ets, mfe_max, be = open_tr
             mfe_max = max(mfe_max, mfe(b, side, entry))
             if mfe_max >= BE_USD:
                 be = entry
-            if t >= FLAT_END and t < ASIA_START:
-                tr = Trade(day, "LINES", side, entry, sl, tp, ets, b.ts, b.open, "01:45平", "lines", lot)
+            if is_flat_time:
+                tr = Trade(day, "LINES", side, entry, sl, tp, ets, b.ts, b.open, "01:45平", "lines_v2", lot)
                 trades.append(tr)
                 day_pnl[day] += tr.pnl_account
                 open_tr = None
+                pending_pullback = None
                 continue
-            hit_result = exit_open(b, side, sl, tp, be)
-            if hit_result:
-                px, why = hit_result
-                tr = Trade(day, "LINES", side, entry, sl, tp, ets, b.ts, px, why, "lines", lot)
+            hit_r = exit_open(b, side, sl, tp, be)
+            if hit_r:
+                px, why = hit_r
+                tr = Trade(day, "LINES", side, entry, sl, tp, ets, b.ts, px, why, "lines_v2", lot)
                 trades.append(tr)
                 day_pnl[day] += tr.pnl_account
                 day_trade_count[day] += 1
                 if tr.pnl_usd_price < 0:
                     day_loss_count[day] += 1
                 open_tr = None
+                pending_pullback = None
             else:
                 open_tr = (side, entry, sl, tp, ets, mfe_max, be)
             continue
 
-        if not in_entry(t):
+        if over_daily or not is_entry_time:
+            pending_pullback = None
             continue
 
-        chunk = bars[idx - window:idx]
-        hi_pts = [(i, chunk[i].high) for i in range(2, len(chunk) - 2) if _swing_hi(chunk, i)]
-        lo_pts = [(i, chunk[i].low) for i in range(2, len(chunk) - 2) if _swing_lo(chunk, i)]
-        up_fit = _fit_line_bt(hi_pts[-6:])
-        dn_fit = _fit_line_bt(lo_pts[-6:])
-        if not up_fit or not dn_fit:
+        chunk = bars[idx - lookback: idx + 1]
+        cn = len(chunk)
+
+        # ---- 等回踩入场 ----
+        if pending_pullback is not None:
+            pb_side, pb_entry, pb_sl, pb_tp, pb_since = pending_pullback
+            if idx - pb_since > pullback_max_bars:
+                pending_pullback = None  # 等太久放弃
+            else:
+                # 回踩判断：价格碰到旧压力线附近（±$3）
+                if abs(b.low - pb_entry) <= 3.0 and pb_side == "long":
+                    open_tr = ("long", pb_entry, pb_sl, pb_tp, b.ts, mfe(b, "long", pb_entry), None)
+                    pending_pullback = None
+                    continue
+                if abs(b.high - pb_entry) <= 3.0 and pb_side == "short":
+                    open_tr = ("short", pb_entry, pb_sl, pb_tp, b.ts, mfe(b, "short", pb_entry), None)
+                    pending_pullback = None
+                    continue
+
+        # ---- 检测突破 ----
+        hi_pts = _find_major_swings(chunk, "high")
+        lo_pts = _find_major_swings(chunk, "low")
+        if len(hi_pts) < 2 or len(lo_pts) < 2:
             continue
-        last_x = len(chunk) - 1
-        up_now = up_fit[0] * last_x + up_fit[1]
-        dn_now = dn_fit[0] * last_x + dn_fit[1]
+
+        # 大熊式：只连最近2个高点
+        p1h, p2h = hi_pts[-2], hi_pts[-1]
+        # 要求是下降通道：高点依次降低
+        if p2h[1] >= p1h[1]:
+            # 不是下降压力线，检查是否是上升支撑线（另一类做法）
+            # 评估期简化：不管上升通道，只做下降通道
+            continue
+        up_line = _two_point_line(p1h, p2h)
+
+        p1l, p2l = lo_pts[-2], lo_pts[-1]
+        dn_line = _two_point_line(p1l, p2l)
+
+        last_x = cn - 1
+        up_now = up_line[0] * last_x + up_line[1]
+        dn_now = dn_line[0] * last_x + dn_line[1]
         prev_x = last_x - 1
-        up_prev = up_fit[0] * prev_x + up_fit[1]
-        dn_prev = dn_fit[0] * prev_x + dn_fit[1]
-        pad = max(1.0, (up_now - dn_now) * 0.08)
+        up_prev = up_line[0] * prev_x + up_line[1]
+
         close = b.close
         prev_close = bars[idx - 1].close
 
-        break_up = close > up_now + pad and prev_close <= up_prev + pad
-        break_down = close < dn_now - pad and prev_close >= dn_prev - pad
+        # 收盘突破（不是影线）
+        broke_up = close > up_now and prev_close <= up_prev
+        broke_dn = close < dn_now and prev_close >= (dn_line[0] * prev_x + dn_line[1])
 
-        if break_up:
-            entry = up_now
-            if abs(close - entry) <= 3.0:
-                sl = entry - SL_USD
-                tp = entry + tp_usd
-                open_tr = ("long", entry, sl, tp, b.ts, mfe(b, "long", entry), None)
-        elif break_down:
-            entry = dn_now
-            if abs(close - entry) <= 3.0:
-                sl = entry + SL_USD
-                tp = entry - tp_usd
-                open_tr = ("short", entry, sl, tp, b.ts, mfe(b, "short", entry), None)
+        if broke_up and pending_pullback is None:
+            # 大熊式：压力变支撑，等回踩 up_now
+            entry_lv = up_now
+            pending_pullback = ("long", entry_lv, entry_lv - SL_USD, entry_lv + tp_usd, idx)
+        elif broke_dn and pending_pullback is None:
+            entry_lv = dn_now
+            pending_pullback = ("short", entry_lv, entry_lv + SL_USD, entry_lv - tp_usd, idx)
 
     if open_tr:
         side, entry, sl, tp, ets, mfe_max, be = open_tr
         last = bars[-1]
-        trades.append(Trade(session_date(last.ts), "LINES", side, entry, sl, tp, ets, last.ts, last.close, "数据结束平", "lines", lot))
+        trades.append(Trade(session_date(last.ts), "LINES", side, entry, sl, tp, ets,
+                            last.ts, last.close, "数据结束平", "lines_v2", lot))
     return trades
 
 
@@ -508,18 +591,18 @@ def run() -> None:
     classic = simulate(bars, "classic", 0.02)
     hwr = simulate(bars, "high_winrate", 0.02)
     sprint = simulate(bars, "sprint", 0.05)
-    lines = simulate_lines(bars, 0.05)
+    lines_v2 = simulate_lines_v2(bars, 0.05)      # 正确还原大熊式
     summarize("原版盒子 classic  SL15/TP12  0.02手", classic, bars)
     summarize("高胜率版 hwr  SL15/TP10  0.02手  要确认K", hwr, bars)
     summarize("冲刺版 sprint  只做B  SL15/TP18  0.05手  要确认K", sprint, bars)
-    summarize("画线模式 lines  破线回踩  SL15/TP18  0.05手", lines, bars)
+    summarize("画线(正确版v2) 大熊式下降通道破位+回踩  SL15/TP18  0.05手", lines_v2, bars)
 
-    print("\n\n========== 五个策略胜率对比 ==========")
+    print("\n\n========== 策略胜率对比 ==========")
     all_runs = [
         ("asia_box", classic),
         ("asia_box_hwr", hwr),
         ("asia_box_sprint", sprint),
-        ("asia_box_lines", lines),
+        ("lines_v2(大熊式)", lines_v2),
     ]
     print(f"{'策略':<22} {'笔数':>5} {'含平胜率':>8} {'剔平胜率':>8} {'净利':>8} {'最大回撤':>8}")
     for name, ts in all_runs:

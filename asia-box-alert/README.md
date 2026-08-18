@@ -4,10 +4,18 @@ Windows 桌面小工具：实时拉黄金现货价，按 **A 震荡 / B 单边**
 
 不自动下单。价格来自公开现货接口，和 MT5 可能差几美元，**盒子建议对照你图上的 ASIA_H / ASIA_L 手动填一次**。
 
+## 本机固定目录
+
+日常请用 **`E:\gold\asia-box-alert`**。
+
+双击 `run.bat` 或点界面 **更新程序**：会从 GitHub 拉最新代码，并自动覆盖同步到 `E:\gold\asia-box-alert`（不会改你的盒子数字、现价缓存）。
+
+第一次：把整个 `asia-box-alert` 文件夹拷到 `E:\gold\`，以后不用再手动拉。
+
 ## 怎么运行（双击，不用打命令）
 
 1. 安装 [Python 3.10+](https://www.python.org/downloads/)，勾选 **Add python.exe to PATH**（只需一次）
-2. 打开 `asia-box-alert` 文件夹
+2. 打开 `E:\gold\asia-box-alert`
 3. **双击 `open.vbs`**（推荐，无黑窗口）
 
    若没反应，改双击 **`launch.bat`** 或 **`run.bat`**（有黑窗口但最稳）

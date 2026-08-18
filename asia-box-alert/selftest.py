@@ -111,6 +111,39 @@ def run_selftest(popup: bool = False) -> int:
     except Exception as exc:
         print(f"[SKIP] 现货联网自测跳过: {exc}")
 
+    print("\n=== 本机目录同步自测 ===")
+    from sync_local import DEFAULT_MIRROR, KEEP_NAMES, should_copy, sync_to_mirror
+    from pathlib import Path
+
+    if str(DEFAULT_MIRROR).replace("/", "\\").lower().endswith("gold\\asia-box-alert"):
+        print("[OK] 默认镜像路径 E:\\gold\\asia-box-alert")
+        ok += 1
+    else:
+        print(f"[FAIL] 镜像路径不对: {DEFAULT_MIRROR}")
+        fail += 1
+    if not should_copy(Path("config.json")) and should_copy(Path("app.py")):
+        print("[OK] 同步会保留 config.json、会复制 app.py")
+        ok += 1
+    else:
+        print("[FAIL] 同步保留规则")
+        fail += 1
+    if "price_ticks.json" in KEEP_NAMES:
+        print("[OK] 不会覆盖本地采样")
+        ok += 1
+    else:
+        print("[FAIL] KEEP_NAMES 缺 price_ticks.json")
+        fail += 1
+    ok_sync, msg = sync_to_mirror()
+    if (not ok_sync) and "非 Windows" in msg:
+        print("[OK] 云端不会误建 E:\\gold 目录")
+        ok += 1
+    elif ok_sync:
+        print(f"[OK] {msg}")
+        ok += 1
+    else:
+        print(f"[FAIL] {msg}")
+        fail += 1
+
     print("\n=== 入场提醒键自测 ===")
     for key in ENTRY_KEYS:
         print(f"  会弹提醒: {key}")

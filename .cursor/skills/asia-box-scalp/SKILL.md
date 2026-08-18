@@ -26,6 +26,19 @@ description: >-
 6. A 止损但未破盒子 → 当天停。A 止损且已破盒子 → 允许 1 笔 B。
 7. 硬刹车：无 SL 不下单、连亏 2 停、日损 -$100 停、**01:45 北京前平仓**。
 
+## 用户本机目录（务必同步）
+
+用户日常运行路径是 **`E:\gold\asia-box-alert`**。云端写不到这块盘。
+
+改监测软件时必须同时：
+
+1. 改仓库里的 `asia-box-alert/`
+2. 用 `sync_local.py` 尝试写入 `E:\gold\asia-box-alert`（本机 Windows agent 才能成功）
+3. 保证 `updater.py` 仍能从 GitHub 拉最新并镜像到该路径
+4. 不要覆盖用户的 `config.json` / `price_ticks.json` / `last_spot.json`
+
+用户双击 `run.bat` 或点界面「更新程序」会自动同步，无需每次 git pull。
+
 ## 禁止
 
 - 不代替用户下单

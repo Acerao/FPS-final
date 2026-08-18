@@ -165,6 +165,7 @@ class App:
             command=self.toggle_topmost,
         ).pack(side="left")
         tk.Button(opts, text="测试提醒", command=self.test_alert).pack(side="right", padx=4)
+        tk.Button(opts, text="更新程序", command=self.update_program).pack(side="right", padx=4)
         tk.Button(opts, text="运行自测", command=self.run_selftest).pack(side="right")
 
         tk.Label(self.root, textvariable=self.status_var, fg=muted, bg="#111318", font=("Microsoft YaHei UI", 9)).pack(
@@ -412,6 +413,27 @@ class App:
         self.h_var.set("")
         self.l_var.set("")
         self.append_log("改回自动盒子")
+
+    def update_program(self) -> None:
+        self.append_log("正在从 GitHub 更新，并同步到 E:\\gold\\asia-box-alert …")
+        self.root.update_idletasks()
+        try:
+            from updater import update_from_github
+
+            msg = update_from_github()
+            self.append_log(msg.replace("\n", " | "))
+            popup_alert("更新完成", msg + "\n\n建议关掉窗口后重新打开一次。", parent=self.root)
+        except Exception as exc:
+            from sync_local import sync_to_mirror
+
+            ok, sync_msg = sync_to_mirror()
+            self.append_log(f"云端更新失败：{exc}")
+            self.append_log(sync_msg)
+            popup_alert(
+                "更新失败",
+                f"GitHub 拉不到（可稍后重试）。\n{sync_msg}\n\n{exc}",
+                parent=self.root,
+            )
 
     def test_alert(self) -> None:
         popup_alert(

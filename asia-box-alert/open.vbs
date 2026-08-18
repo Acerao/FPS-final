@@ -12,12 +12,12 @@ If Not fso.FileExists(dir & "\app.py") Then
 End If
 
 ' 1) py -3  (same as run.bat on your new PC)
-cmd = "cmd /c cd /d """ & dir & """ && py -3 app.py"
+cmd = "cmd /c cd /d """ & dir & """ && py -3 updater.py >nul 2>&1 & py -3 app.py"
 rc = sh.Run(cmd, 0, True)
 If rc = 0 Then WScript.Quit 0
 
 ' 2) python
-cmd = "cmd /c cd /d """ & dir & """ && python app.py"
+cmd = "cmd /c cd /d """ & dir & """ && python updater.py >nul 2>&1 & python app.py"
 rc = sh.Run(cmd, 0, True)
 If rc = 0 Then WScript.Quit 0
 

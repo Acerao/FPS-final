@@ -952,6 +952,14 @@ class App:
         box_high = ov.get("box_high")
         if box_low is not None and box_high is not None:
             self.chart.create_rectangle(left, py(box_high), right, py(box_low), outline="#d29922", fill="#d29922", stipple="gray25")
+            self.chart.create_text(
+                left + 8,
+                py(float(box_high)) - 2,
+                anchor="sw",
+                fill="#d29922",
+                text=f"需求区 {float(box_low):.1f}–{float(box_high):.1f}",
+                font=("Microsoft YaHei UI", 8),
+            )
 
         plan = ov.get("plan")
         if isinstance(plan, dict):

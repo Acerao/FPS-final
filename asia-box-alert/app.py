@@ -256,9 +256,9 @@ class App:
         tk.Button(opts, text="运行自测", command=self.run_selftest).pack(side="right")
 
         self.status_label = tk.Label(self.root, textvariable=self.status_var, fg=muted, bg="#111318", font=("Microsoft YaHei UI", 9))
-        self.status_label.pack(side="bottom", pady=6)
         self.log = tk.Text(self.root, height=7, bg="#0d1017", fg="#c8d0dc", insertbackground="white", borderwidth=0)
-        self.log.pack(fill="both", expand=True, padx=16, pady=(0, 10))
+        self.log.pack(side="bottom", fill="both", expand=True, padx=16, pady=(0, 10))
+        self.status_label.pack(side="bottom", pady=6)
 
         # 监听缩放：小窗时只保留实时金价
         self._compact_mode = False
@@ -422,6 +422,8 @@ class App:
             self.form2_frame,
             self.grid_frame,
             self.opts_frame,
+            self.status_label,
+            self.log,
         ]
         for w in blocks:
             w.pack_forget()
@@ -442,6 +444,14 @@ class App:
         self.form2_frame.pack(fill="x", padx=16, pady=(4, 0))
         self.grid_frame.pack(fill="x", padx=16, pady=(6, 0))
         self.opts_frame.pack(fill="x", padx=16, pady=8)
+
+        # 底部两块固定在最下，避免滚轮重排时“日志顶到上面”
+        if self._low_space_mode:
+            self.status_label.pack_forget()
+            self.log.pack_forget()
+        else:
+            self.log.pack(side="bottom", fill="both", expand=True, padx=16, pady=(0, 10))
+            self.status_label.pack(side="bottom", pady=6)
 
     def _apply_view_level(self) -> None:
         # level 0: 全部显示
@@ -552,8 +562,8 @@ class App:
             self.log.pack_forget()
             self._low_space_mode = True
         elif not low_space and self._low_space_mode:
+            self.log.pack(side="bottom", fill="both", expand=True, padx=16, pady=(0, 10))
             self.status_label.pack(side="bottom", pady=6)
-            self.log.pack(fill="both", expand=True, padx=16, pady=(0, 10))
             self._low_space_mode = False
 
         # 底部日志：偏小高度会挤，适当缩短；极端情况由 compact mode 处理
@@ -601,8 +611,8 @@ class App:
             self.form2_frame.pack(fill="x", padx=16, pady=(4, 0))
             self.grid_frame.pack(fill="x", padx=16, pady=(6, 0))
             self.opts_frame.pack(fill="x", padx=16, pady=8)
+            self.log.pack(side="bottom", fill="both", expand=True, padx=16, pady=(0, 10))
             self.status_label.pack(side="bottom", pady=6)
-            self.log.pack(fill="both", expand=True, padx=16, pady=(0, 10))
             # 同样不强行改回默认尺寸
             # self.root.geometry("700x820")
 

@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
+import math
 
 from news_calendar import NewsStatus, get_news_status
 from scale_grid import (
@@ -49,6 +50,7 @@ def _strategy_label(strategy: str) -> str:
         "asia_box": "亚盘盒子",
         "asia_box_hwr": "亚盘盒子·高胜率",
         "asia_box_sprint": "亚盘盒子·冲刺$1k",
+        "asia_box_lines": "画线策略·H8风格",
         "scale_grid": "等距网格",
     }.get(strategy, strategy)
 
@@ -62,6 +64,8 @@ ENTRY_KEYS = {
     "grid_close_all",
     "grid_stop_all",
     "grid_flatten",
+    "line_long_call",
+    "line_short_call",
 }
 
 
@@ -84,6 +88,127 @@ class Dashboard:
     bar_note: str
     adx_tf: str
     indicators_text: str
+    line_overlay: dict | None = None
+
+
+def _swing_points(bars: list[object], kind: str) -> list[tuple[int, float]]:
+    vals: list[tuple[int, float]] = []
+    if len(bars) < 5:
+        return vals
+    for i in range(2, len(bars) - 2):
+        cur = bars[i]
+        prev = bars[i - 1]
+        nxt = bars[i + 1]
+        c = float(getattr(cur, kind))
+        p = float(getattr(prev, kind))
+        n = float(getattr(nxt, kind))
+        if kind == "high":
+            if c >= p and c >= n:
+                vals.append((i, c))
+        else:
+            if c <= p and c <= n:
+                vals.append((i, c))
+    return vals
+
+
+def _fit_line(points: list[tuple[int, float]]) -> tuple[float, float] | None:
+    if len(points) < 2:
+        return None
+    n = float(len(points))
+    sx = sum(p[0] for p in points)
+    sy = sum(p[1] for p in points)
+    sxx = sum(p[0] * p[0] for p in points)
+    sxy = sum(p[0] * p[1] for p in points)
+    den = n * sxx - sx * sx
+    if abs(den) < 1e-9:
+        return None
+    a = (n * sxy - sx * sy) / den
+    b = (sy - a * sx) / n
+    return a, b
+
+
+def _line_y(line: tuple[float, float] | None, x: int, fallback: float) -> float:
+    if not line:
+        return fallback
+    a, b = line
+    return a * x + b
+
+
+def _line_mode_signal(price: float, bars: list[object], lot: float) -> tuple[Signal, dict]:
+    n = len(bars)
+    last_x = n - 1
+    close = float(getattr(bars[-1], "close"))
+    prev_close = float(getattr(bars[-2], "close")) if n >= 2 else close
+    highs = _swing_points(bars, "high")
+    lows = _swing_points(bars, "low")
+    up_fit = _fit_line(highs[-6:])
+    dn_fit = _fit_line(lows[-6:])
+    up_now = _line_y(up_fit, last_x, max(float(getattr(b, "high")) for b in bars[-20:]))
+    dn_now = _line_y(dn_fit, last_x, min(float(getattr(b, "low")) for b in bars[-20:]))
+    up_prev = _line_y(up_fit, max(0, last_x - 1), up_now)
+    dn_prev = _line_y(dn_fit, max(0, last_x - 1), dn_now)
+
+    box_low = min(float(getattr(b, "low")) for b in bars[-24:])
+    box_high = box_low + (max(float(getattr(b, "high")) for b in bars[-24:]) - box_low) * 0.35
+
+    pad = max(1.0, (up_now - dn_now) * 0.08 if up_now > dn_now else 1.0)
+    break_up = close > up_now + pad and prev_close <= up_prev + pad
+    break_down = close < dn_now - pad and prev_close >= dn_prev - pad
+    near_up = abs(close - up_now) <= pad
+    near_dn = abs(close - dn_now) <= pad or (box_low <= close <= box_high)
+
+    if break_up:
+        sig = Signal(
+            "line_long_call",
+            "LINES",
+            "画线偏多：上破压力",
+            f"H8风格：已上破下降压力。建议等回踩 {up_now:.1f} 不破再多，SL 约 $15，别追第一根。",
+            True,
+        )
+        bias = "偏多"
+    elif break_down:
+        sig = Signal(
+            "line_short_call",
+            "LINES",
+            "画线偏空：跌破支撑",
+            f"H8风格：已跌破下轨/支撑箱。建议等反抽 {dn_now:.1f} 承压再空，SL 约 $15。",
+            True,
+        )
+        bias = "偏空"
+    elif near_up:
+        sig = Signal(
+            "line_wait",
+            "LINES",
+            "画线压力附近",
+            f"价格靠近下降压力 {up_now:.1f}，先防假突破。未收上去前不追多。",
+            False,
+        )
+        bias = "压力观察"
+    elif near_dn:
+        sig = Signal(
+            "line_wait",
+            "LINES",
+            "画线支撑附近",
+            f"价格靠近支撑/需求区 {box_low:.1f}-{box_high:.1f}，等确认K再考虑反弹。",
+            False,
+        )
+        bias = "支撑观察"
+    else:
+        mid = (up_now + dn_now) / 2.0
+        side = "上半区" if close >= mid else "下半区"
+        sig = Signal("line_wait", "LINES", "通道内等待", f"当前在通道{side}，先等靠线再决策。", False)
+        bias = "震荡等待"
+
+    overlay = {
+        "upper_fit": up_fit,
+        "lower_fit": dn_fit,
+        "box_low": box_low,
+        "box_high": box_high,
+        "bias": bias,
+        "lot": lot,
+        "suggest_tp": 18.0 if break_up or break_down else 12.0,
+    }
+    return sig, overlay
 
 
 def _regime(box: Box | None, adx: AdxState | None, price: float, m15_close: float | None) -> tuple[str, str]:
@@ -131,6 +256,14 @@ def build_dashboard(
     grid = grid or GridState()
     if strategy == "scale_grid":
         signal = evaluate_grid(price, grid, adx, now, news)
+        line_overlay = None
+    elif strategy == "asia_box_lines":
+        line_bars = m15_bars[-120:] if m15_bars else []
+        if len(line_bars) < 20:
+            signal = Signal("line_wait", "LINES", "画线数据不足", "K线不足，至少需要约 20 根再画线。", False)
+            line_overlay = None
+        else:
+            signal, line_overlay = _line_mode_signal(price, line_bars, clamp_lot(lot))
     else:
         profile = _profile_for(strategy)
         signal = evaluate(
@@ -144,6 +277,7 @@ def build_dashboard(
             profile=profile,
             lot=lot,
         )
+        line_overlay = None
 
     entry_ok = signal.key in ENTRY_KEYS and not news.in_blackout
 
@@ -199,6 +333,16 @@ def build_dashboard(
         lines.append(f"ADX {adx_txt}  |  RSI(M15) {rsi_txt}  |  大数据 {news.summary}")
         lines.append("✓ 可提醒" if entry_ok else "观察中")
         indicators_text = "\n".join(lines)
+    elif strategy == "asia_box_lines":
+        used_lot = clamp_lot(lot)
+        sl_risk = risk_dollars(used_lot, SL_USD)
+        indicators_text = (
+            f"策略 {_strategy_label(strategy)}  |  时段 {session}  |  位置 {zone}\n"
+            f"手数 {used_lot}  单笔止损约 ${sl_risk:.0f}  |  核心：压力/支撑/破位回踩\n"
+            f"{kline_line}\n"
+            f"ADX {adx_txt}  |  RSI(M15) {rsi_txt}  |  M15收盘 {m15_txt}\n"
+            f"建议 {'✓ 可提醒' if entry_ok else '✗ 等待'}"
+        )
     else:
         used_lot = clamp_lot(lot)
         sl_risk = risk_dollars(used_lot, SL_USD)
@@ -239,4 +383,5 @@ def build_dashboard(
         bar_note=bar_note,
         adx_tf=adx_tf,
         indicators_text=indicators_text,
+        line_overlay=line_overlay,
     )

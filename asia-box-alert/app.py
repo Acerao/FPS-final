@@ -134,6 +134,15 @@ class App:
             pady=10,
         )
         msg.pack(fill="x", padx=16, pady=6)
+        self.chart = tk.Canvas(
+            self.root,
+            width=660,
+            height=230,
+            bg="#0f1219",
+            highlightthickness=1,
+            highlightbackground="#2e3440",
+        )
+        self.chart.pack(fill="x", padx=16, pady=(2, 6))
 
         strat = tk.Frame(self.root, bg="#111318")
         strat.pack(fill="x", padx=16, pady=(8, 0))
@@ -144,6 +153,7 @@ class App:
             "asia_box",
             "asia_box_hwr",
             "asia_box_sprint",
+            "asia_box_lines",
             "scale_grid",
             command=lambda _: self.on_strategy_change(),
         )
@@ -161,7 +171,7 @@ class App:
         self.lot_box.pack(side="left", padx=6)
         tk.Label(
             strat,
-            text="高胜率=确认K  冲刺=只做B+加大手",
+            text="高胜率=确认K  冲刺=只做B+加大手  画线=K线+趋势线",
             fg=muted,
             bg="#111318",
             font=("Microsoft YaHei UI", 8),
@@ -319,6 +329,7 @@ class App:
             "asia_box": "亚盘盒子",
             "asia_box_hwr": "亚盘盒子·高胜率",
             "asia_box_sprint": "亚盘盒子·冲刺$1k",
+            "asia_box_lines": "画线策略·H8风格",
             "scale_grid": "等距网格",
         }
         self.append_log("已切换策略：" + labels.get(self.cfg["strategy"], self.cfg["strategy"]))
@@ -414,6 +425,7 @@ class App:
         self.news_var.set(f"📰 {dash.news.summary}\n{dash.news.detail}")
         self.msg_var.set(dash.signal.message)
         self.status_var.set(f"{now:%H:%M:%S}  {source}")
+        self._draw_chart(dash)
 
         sig = dash.signal
         should_alert = (
@@ -428,6 +440,62 @@ class App:
                 self.last_alert_at = now_ts
                 self.append_log(f"【提醒】{sig.title} | {sig.message}")
                 popup_alert(sig.title, sig.message, parent=self.root)
+
+    def _draw_chart(self, dash) -> None:
+        self.chart.delete("all")
+        bars = self.cached_bars[-90:] if self.cached_bars else []
+        if self.strategy_var.get() != "asia_box_lines":
+            self.chart.create_text(330, 115, fill="#57606a", text="切到 asia_box_lines 可查看 K线与画线", font=("Microsoft YaHei UI", 10))
+            return
+        if len(bars) < 20:
+            self.chart.create_text(330, 115, fill="#9aa3b2", text="K线不足，等待更多数据后画线", font=("Microsoft YaHei UI", 10))
+            return
+        w = max(100, self.chart.winfo_width())
+        h = max(100, self.chart.winfo_height())
+        left, right, top, bottom = 18, w - 18, 14, h - 24
+        highs = [float(getattr(b, "high")) for b in bars]
+        lows = [float(getattr(b, "low")) for b in bars]
+        max_p, min_p = max(highs), min(lows)
+        span = max(max_p - min_p, 1.0)
+
+        def px(i: int) -> float:
+            return left + (right - left) * i / max(len(bars) - 1, 1)
+
+        def py(v: float) -> float:
+            return top + (max_p - v) / span * (bottom - top)
+
+        # Candles
+        for i, b in enumerate(bars):
+            o = float(getattr(b, "open"))
+            c = float(getattr(b, "close"))
+            hi = float(getattr(b, "high"))
+            lo = float(getattr(b, "low"))
+            x = px(i)
+            self.chart.create_line(x, py(hi), x, py(lo), fill="#8b949e")
+            half = max(1.5, (right - left) / max(len(bars), 1) * 0.35)
+            y1, y2 = py(o), py(c)
+            color = "#2ea043" if c >= o else "#f85149"
+            self.chart.create_rectangle(x - half, min(y1, y2), x + half, max(y1, y2), outline=color, fill=color)
+
+        ov = dash.line_overlay or {}
+        up = ov.get("upper_fit")
+        dn = ov.get("lower_fit")
+        if up:
+            y1 = py(up[0] * 0 + up[1])
+            y2 = py(up[0] * (len(bars) - 1) + up[1])
+            self.chart.create_line(px(0), y1, px(len(bars) - 1), y2, fill="#58a6ff", width=2)
+        if dn:
+            y1 = py(dn[0] * 0 + dn[1])
+            y2 = py(dn[0] * (len(bars) - 1) + dn[1])
+            self.chart.create_line(px(0), y1, px(len(bars) - 1), y2, fill="#58a6ff", width=2)
+        box_low = ov.get("box_low")
+        box_high = ov.get("box_high")
+        if box_low is not None and box_high is not None:
+            self.chart.create_rectangle(left, py(box_high), right, py(box_low), outline="#d29922", fill="#d29922", stipple="gray25")
+        self.chart.create_text(left + 6, top + 8, anchor="w", fill="#c9d1d9", text=f"{max_p:.1f}", font=("Consolas", 9))
+        self.chart.create_text(left + 6, bottom - 8, anchor="w", fill="#c9d1d9", text=f"{min_p:.1f}", font=("Consolas", 9))
+        bias = ov.get("bias", "等待")
+        self.chart.create_text(right - 4, top + 8, anchor="ne", fill="#f4d35e", text=f"Bias: {bias}", font=("Microsoft YaHei UI", 9, "bold"))
 
     def refresh_price(self) -> None:
         if not self.price_busy:

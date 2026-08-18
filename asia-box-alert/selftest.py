@@ -59,6 +59,25 @@ def run_selftest(popup: bool = False) -> int:
         print("[FAIL] Dashboard 应禁止入场")
         fail += 1
 
+    print("\n=== 本地K线积累自测 ===")
+    from datetime import timedelta
+    from spot_history import SpotHistory
+    from pathlib import Path
+    import tempfile
+
+    tmp = Path(tempfile.mkdtemp()) / "ticks.json"
+    hist = SpotHistory(tmp)
+    base = datetime(2026, 8, 17, 10, 0, tzinfo=BEIJING)
+    for i in range(20):
+        hist.add(4400.0 + i * 0.1, base + timedelta(minutes=i * 2))
+    m5 = hist.m5_bars()
+    if len(m5) >= 3:
+        print(f"[OK] 现货采样可聚合 M5 ({len(m5)} 根)")
+        ok += 1
+    else:
+        print(f"[FAIL] M5 聚合不足: {len(m5)}")
+        fail += 1
+
     print("\n=== 入场提醒键自测 ===")
     for key in ENTRY_KEYS:
         print(f"  会弹提醒: {key}")

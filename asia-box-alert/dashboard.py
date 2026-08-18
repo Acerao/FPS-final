@@ -38,6 +38,8 @@ class Dashboard:
     news: NewsStatus
     signal: Signal
     entry_ok: bool
+    bar_src: str
+    bar_note: str
     indicators_text: str
 
 
@@ -70,6 +72,8 @@ def build_dashboard(
     m15_close: float | None,
     news: NewsStatus | None = None,
     now=None,
+    bar_src: str = "",
+    bar_note: str = "",
 ) -> Dashboard:
     now = beijing_now(now)
     news = news or get_news_status(now)
@@ -89,9 +93,24 @@ def build_dashboard(
         else "未锁定"
     )
 
+    kline_line = f"K线 {bar_src}" if bar_src else "K线 --"
+    if bar_note:
+        kline_line += f"\n{bar_note}"
+
+    missing: list[str] = []
+    if adx is None:
+        missing.append("ADX 需约 16 根 M15")
+    if rsi is None:
+        missing.append("RSI 需约 15 根 M15")
+    if m15_close is None:
+        missing.append("M15收盘 需至少 2 根 K 线")
+    if missing and bar_src.startswith("本地"):
+        kline_line += f"\n⏳ {' · '.join(missing)}（程序保持运行会自动补齐）"
+
     indicators_text = (
         f"时段 {session}  |  日型 {regime}  |  位置 {zone}\n"
         f"盒子 {box_txt}\n"
+        f"{kline_line}\n"
         f"ADX {adx_txt}  |  RSI(M15) {rsi_txt}  |  M15收盘 {m15_txt}\n"
         f"结构 {broken}  |  大数据 {news.summary}\n"
         f"入场 {'✓ 可提醒' if entry_ok else '✗ 不适合'}"
@@ -111,5 +130,7 @@ def build_dashboard(
         news=news,
         signal=signal,
         entry_ok=entry_ok,
+        bar_src=bar_src,
+        bar_note=bar_note,
         indicators_text=indicators_text,
     )

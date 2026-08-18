@@ -11,9 +11,11 @@ import time
 from pathlib import Path
 
 from alerts import popup_alert
+from bar_source import get_indicator_bars
 from dashboard import ENTRY_KEYS, build_dashboard
-from gold_feed import asia_high_low, fetch_snapshot, fetch_spot, last_closed_m15
+from gold_feed import asia_high_low, fetch_spot, last_closed_m15
 from news_calendar import get_news_status
+from spot_history import get_history
 from strategy import Box, beijing_now, compute_adx, compute_rsi, session_status
 
 ROOT = Path(__file__).resolve().parent
@@ -49,12 +51,15 @@ class App:
         self.bar_busy = False
         self.news_busy = False
         self.last_price: float | None = None
+        self.cached_price_source = ""
         self.cached_bars = []
         self.cached_adx = None
         self.cached_rsi = None
         self.cached_last_close = None
         self.cached_auto_box = None
         self.cached_news = get_news_status()
+        self.cached_bar_src = ""
+        self.cached_bar_note = ""
         self._bar_log = ""
 
         self.root = tk.Tk()
@@ -194,6 +199,8 @@ class App:
             self.cached_last_close,
             self.cached_news,
             now,
+            self.cached_bar_src,
+            self.cached_bar_note,
         )
 
         delta = ""
@@ -251,26 +258,30 @@ class App:
         try:
             price, source = fetch_spot()
             now = beijing_now()
+            get_history().add(price, now)
             self.root.after(0, lambda: self._apply_price(price, source, now))
         except Exception as exc:
             self.root.after(0, lambda e=str(exc): self._fail_price(e))
 
     def _poll_bars(self) -> None:
         try:
-            snap = fetch_snapshot()
-            auto = asia_high_low(snap.bars_15m, beijing_now())
+            pack = get_indicator_bars()
+            auto = asia_high_low(pack.bars, beijing_now()) if pack.bars else None
             adx = rsi = last_close = None
-            if snap.bars_15m:
-                closes = [b.close for b in snap.bars_15m]
+            if pack.bars:
+                closes = [b.close for b in pack.bars]
                 adx = compute_adx(
-                    [b.high for b in snap.bars_15m],
-                    [b.low for b in snap.bars_15m],
+                    [b.high for b in pack.bars],
+                    [b.low for b in pack.bars],
                     closes,
                 )
                 rsi = compute_rsi(closes)
-                closed = last_closed_m15(snap.bars_15m)
+                closed = last_closed_m15(pack.bars)
                 last_close = closed.close if closed else None
-            self.root.after(0, lambda: self._apply_bars(snap.warning, auto, adx, rsi, last_close))
+            self.root.after(
+                0,
+                lambda: self._apply_bars(pack.source, pack.note, auto, adx, rsi, last_close),
+            )
         except Exception as exc:
             self.root.after(0, lambda e=str(exc): self._fail_bars(e))
 
@@ -287,7 +298,7 @@ class App:
 
     def _fail_bars(self, err: str) -> None:
         self.bar_busy = False
-        msg = "K线暂不可用，请手动填 ASIA_H/L（ADX/RSI 可能为空）"
+        msg = f"K线刷新失败：{err}。现货仍在积累，请保持程序运行或手动填 ASIA_H/L"
         if msg != self._bar_log:
             self._bar_log = msg
             self.append_log(msg)
@@ -296,15 +307,20 @@ class App:
         self.news_busy = False
         self.news_var.set(f"📰 日历拉取失败：{err}")
 
-    def _apply_bars(self, warning, auto, adx, rsi, last_close) -> None:
+    def _apply_bars(self, bar_src, bar_note, auto, adx, rsi, last_close) -> None:
         self.bar_busy = False
         self.cached_adx = adx
         self.cached_rsi = rsi
         self.cached_last_close = last_close
         self.cached_auto_box = auto
-        if warning and warning != self._bar_log:
-            self._bar_log = warning
-            self.append_log(warning)
+        self.cached_bar_src = bar_src
+        self.cached_bar_note = bar_note
+        log_line = f"{bar_src} | {bar_note}" if bar_note else bar_src
+        if log_line and log_line != self._bar_log:
+            self._bar_log = log_line
+            self.append_log(log_line)
+        if self.last_price is not None:
+            self._render(self.last_price, self.cached_price_source or "现货", beijing_now())
 
     def _apply_news(self, news) -> None:
         self.news_busy = False
@@ -312,6 +328,7 @@ class App:
 
     def _apply_price(self, price, source, now) -> None:
         self.price_busy = False
+        self.cached_price_source = source
         self._render(price, source, now)
 
     def save_box(self) -> None:
@@ -360,14 +377,28 @@ def print_once() -> None:
     cfg = load_config()
     price, source = fetch_spot()
     now = beijing_now()
+    get_history().add(price, now)
     box = None
+    box_src = "未锁定"
     if cfg.get("asia_h") and cfg.get("asia_l"):
         box = Box(high=cfg["asia_h"], low=cfg["asia_l"])
-    dash = build_dashboard(price, box, "手动", None, None, None, None, now)
+        box_src = "手动"
+    pack = get_indicator_bars()
+    adx = rsi = last_close = None
+    if pack.bars:
+        closes = [b.close for b in pack.bars]
+        adx = compute_adx([b.high for b in pack.bars], [b.low for b in pack.bars], closes)
+        rsi = compute_rsi(closes)
+        closed = last_closed_m15(pack.bars)
+        last_close = closed.close if closed else None
+    dash = build_dashboard(
+        price, box, box_src, adx, rsi, last_close, None, now, pack.source, pack.note
+    )
     print(dash.indicators_text)
     print(dash.news.summary)
     print(f"[{dash.signal.mode}] {dash.signal.title}")
     print(dash.signal.message)
+    print(f"报价来源: {source}")
 
 
 def main() -> None:

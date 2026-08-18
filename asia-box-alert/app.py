@@ -5,6 +5,7 @@ from __future__ import annotations
 
 import argparse
 import json
+import re
 import sys
 import threading
 import time
@@ -25,6 +26,7 @@ PRICE_MS = 2500
 BAR_MS = 30000
 NEWS_MS = 300000
 ALERT_COOLDOWN_SEC = 180
+SAME_ENTRY_SUPPRESS_SEC = 900  # 相同入场价短时不重复弹（15分钟）
 
 
 def load_config() -> dict:
@@ -48,6 +50,7 @@ class App:
         self.cfg = load_config()
         self.last_alert_key = ""
         self.last_alert_at = 0.0
+        self._last_entry_alert: dict[str, tuple[float, float]] = {}
         self.price_busy = False
         self.bar_busy = False
         self.news_busy = False
@@ -691,11 +694,39 @@ class App:
 
         if should_alert:
             now_ts = time.time()
-            if sig.key != self.last_alert_key or now_ts - self.last_alert_at > ALERT_COOLDOWN_SEC:
+            allow = sig.key != self.last_alert_key or now_ts - self.last_alert_at > ALERT_COOLDOWN_SEC
+            if allow:
+                # 入场价去重：短时间内相同入场位不重复提醒（尤其 hwr）
+                entry = self._extract_entry_price(sig.message)
+                if entry is not None:
+                    dedupe_key = f"{self.strategy_var.get()}:{sig.key}"
+                    prev = self._last_entry_alert.get(dedupe_key)
+                    if prev:
+                        prev_entry, prev_ts = prev
+                        if abs(prev_entry - entry) <= 0.3 and now_ts - prev_ts < SAME_ENTRY_SUPPRESS_SEC:
+                            allow = False
+                    if allow:
+                        self._last_entry_alert[dedupe_key] = (entry, now_ts)
+            if allow:
                 self.last_alert_key = sig.key
                 self.last_alert_at = now_ts
                 self.append_log(f"【提醒】{sig.title} | {sig.message}")
                 popup_alert(sig.title, sig.message, parent=self.root)
+
+    def _extract_entry_price(self, message: str) -> float | None:
+        """
+        从提醒文案里提取入场价（Buy/Sell Limit 或 Entry）。
+        例：Buy Limit 4416 / Sell Limit 4390 / Entry 4387.5
+        """
+        if not message:
+            return None
+        m = re.search(r"(?:Buy Limit|Sell Limit|Entry)\s*([0-9]+(?:\.[0-9]+)?)", message)
+        if not m:
+            return None
+        try:
+            return float(m.group(1))
+        except ValueError:
+            return None
 
     def _draw_chart(self, dash) -> None:
         self.chart.delete("all")

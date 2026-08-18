@@ -281,6 +281,34 @@ class App:
             font=self._font_ui_compact,
         )
         self.compact_tick_label.pack(padx=10, pady=(0, 8))
+
+        # 允许拖拽移动小框：记录鼠标相对窗口左上角的偏移
+        self._compact_drag_dx = 0
+        self._compact_drag_dy = 0
+
+        def _compact_on_press(evt) -> None:
+            try:
+                self._compact_drag_dx = evt.x_root - self.compact_win.winfo_x()
+                self._compact_drag_dy = evt.y_root - self.compact_win.winfo_y()
+            except Exception:
+                self._compact_drag_dx = 0
+                self._compact_drag_dy = 0
+
+        def _compact_on_motion(evt) -> None:
+            try:
+                x = evt.x_root - self._compact_drag_dx
+                y = evt.y_root - self._compact_drag_dy
+                self.compact_win.geometry(f"+{x}+{y}")
+            except Exception:
+                pass
+
+        # 绑到整个窗口（标签上也会触发，保证好用）
+        self.compact_win.bind("<Button-1>", _compact_on_press)
+        self.compact_win.bind("<B1-Motion>", _compact_on_motion)
+        self.compact_price_label.bind("<Button-1>", _compact_on_press)
+        self.compact_price_label.bind("<B1-Motion>", _compact_on_motion)
+        self.compact_tick_label.bind("<Button-1>", _compact_on_press)
+        self.compact_tick_label.bind("<B1-Motion>", _compact_on_motion)
         self.root.bind("<Unmap>", self._on_unmap)
         self.root.bind("<Map>", self._on_map)
 
@@ -320,7 +348,8 @@ class App:
             y = 20
         except Exception:
             x, y = 10, 10
-        self.compact_win.geometry(f"180x100+{x}+{y}")
+        # 更小 + 仍可读
+        self.compact_win.geometry(f"140x80+{x}+{y}")
         self.compact_win.deiconify()
 
     def _on_resize(self, _evt=None) -> None:

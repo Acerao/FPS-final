@@ -1,0 +1,3 @@
+# Optional. The app now runs with Python stdlib only.
+# winotify improves Windows toast alerts if installed.
+winotify>=1.1.0; platform_system=="Windows"

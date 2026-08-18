@@ -17,6 +17,7 @@ description: >-
 - 说「按盒子做」「黄金策略」
 - 说网格、马丁、跌了加仓、回弹全平 → 读 [PLAYBOOK_GRID.md](PLAYBOOK_GRID.md)，评估期只用等距网格，禁止翻倍马丁
 - 说翻倍、百倍、对冲、B站/油管策略视频 → 读 [PLAYBOOK_VIDEOS.md](PLAYBOOK_VIDEOS.md)：只借结构单笔，禁止对冲/马丁/无硬止损
+- 问能赚多少、多久到 $1000、去年前年走势 → 读 [BACKTEST_HWR.md](BACKTEST_HWR.md)
 
 ## 执行顺序
 

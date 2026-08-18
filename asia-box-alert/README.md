@@ -61,6 +61,8 @@ python app.py --once
 
 - **asia_box**：亚盘盒子（默认）
 - **asia_box_hwr**：亚盘盒子高胜率版（到位后必须等 M15 确认K 才提醒；TP 默认更短）
+
+两年粗回测（GC=F H1，非实盘）见 `.cursor/skills/asia-box-scalp/BACKTEST_HWR.md`。跑：`python backtest_hwr.py`
 - **scale_grid**：等距网格（跌了等量加仓，回弹全平；禁止翻倍马丁）
 
 ## 界面会显示什么

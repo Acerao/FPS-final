@@ -259,9 +259,37 @@ class App:
         self._compact_mode = False
         self.root.bind("<Configure>", self._on_resize)
 
+        # 最小化时：用一个“极小置顶 Toplevel”继续显示金价
+        self.compact_win = tk.Toplevel(self.root)
+        self.compact_win.withdraw()
+        self.compact_win.overrideredirect(True)
+        self.compact_win.attributes("-topmost", True)
+        self.compact_win.configure(bg="#111318")
+        self.compact_price_label = tk.Label(
+            self.compact_win,
+            textvariable=self.price_var,
+            fg="#f4d35e",
+            bg="#111318",
+            font=self._font_big_compact,
+        )
+        self.compact_price_label.pack(padx=10, pady=(10, 2))
+        self.compact_tick_label = tk.Label(
+            self.compact_win,
+            textvariable=self.tick_var,
+            fg="#7ee787",
+            bg="#111318",
+            font=self._font_ui_compact,
+        )
+        self.compact_tick_label.pack(padx=10, pady=(0, 8))
+        self.root.bind("<Unmap>", self._on_unmap)
+        self.root.bind("<Map>", self._on_map)
+
         # 初始判定一次
         self.root.update_idletasks()
         self._set_compact_mode(False)
+
+        # 确保最小化时不会误显示极简窗
+        self.compact_win.withdraw()
 
         self.root.after(300, self.refresh_price)
         self.root.after(800, self.refresh_bars)
@@ -269,6 +297,31 @@ class App:
 
     def toggle_topmost(self) -> None:
         self.root.attributes("-topmost", bool(self.topmost_var.get()))
+
+    def _on_unmap(self, _evt=None) -> None:
+        """窗口被最小化/隐藏后：显示极简金价框。"""
+        try:
+            state = self.root.state()
+        except Exception:
+            state = ""
+        if state == "iconic":
+            self._show_compact_toplevel()
+
+    def _on_map(self, _evt=None) -> None:
+        """窗口恢复后：隐藏极简金价框。"""
+        self.compact_win.withdraw()
+
+    def _show_compact_toplevel(self) -> None:
+        try:
+            sw = self.root.winfo_screenwidth()
+            sh = self.root.winfo_screenheight()
+            # 放在右上角附近
+            x = sw - 190
+            y = 20
+        except Exception:
+            x, y = 10, 10
+        self.compact_win.geometry(f"180x100+{x}+{y}")
+        self.compact_win.deiconify()
 
     def _on_resize(self, _evt=None) -> None:
         """窗口变小后进入“极简实时金价”模式。"""

@@ -825,8 +825,11 @@ class App:
             if allow:
                 self.last_alert_key = sig.key
                 self.last_alert_at = now_ts
-                self.append_log(f"【提醒】{sig.title} | {sig.message}")
-                popup_alert(sig.title, sig.message, parent=self.root)
+                stamp = f"现价 {price:.2f}  |  {now:%Y-%m-%d %H:%M:%S}"
+                alert_title = f"{sig.title}  ·  {price:.2f}"
+                alert_body = f"{stamp}\n{sig.message}"
+                self.append_log(f"【提醒】{stamp} | {sig.title} | {sig.message}")
+                popup_alert(alert_title, alert_body, parent=self.root)
 
     def _extract_entry_price(self, message: str) -> float | None:
         """
@@ -1100,12 +1103,15 @@ class App:
             )
 
     def test_alert(self) -> None:
+        now = beijing_now()
+        price = self.last_price
+        stamp = f"现价 {price:.2f}  |  {now:%Y-%m-%d %H:%M:%S}" if price else f"现价 --  |  {now:%Y-%m-%d %H:%M:%S}"
         popup_alert(
-            "亚盘盒子测试",
-            "如果你能看到这个对话框，说明提醒正常。\n推荐入场时会同样弹窗。",
+            "亚盘盒子测试" + (f"  ·  {price:.2f}" if price else ""),
+            f"{stamp}\n如果你能看到这个对话框，说明提醒正常。\n推荐入场时会同样弹窗，并带上当时价格和时间。",
             parent=self.root,
         )
-        self.append_log("已发送测试提醒（应弹出对话框）")
+        self.append_log(f"已发送测试提醒（{stamp}）")
 
     def run_selftest(self) -> None:
         from selftest import run_selftest

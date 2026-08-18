@@ -20,6 +20,9 @@ ADX_TREND_MIN = 28.0
 ADX_MIN_BARS = 28  # Wilder: 14 根种子 ATR + 14 根种子 DX
 PULLBACK_TOL = 3.0  # dollars from breakout level
 CHASE_PAD = 8.0
+SL_USD = 15.0
+TP_USD = 12.0  # 高胜率默认约 0.8R；想放大单笔可改回 22
+LOT = 0.02
 
 
 @dataclass
@@ -208,7 +211,7 @@ def evaluate(
                 "b_long",
                 "B",
                 "B 做多回踩到了",
-                f"回踩上沿 {box.high:.2f}。Buy Limit {box.high:.0f}，SL {box.high - 15:.0f}，TP {box.high + 22:.0f}，手数 0.02。",
+                f"回踩上沿 {box.high:.2f}。Buy Limit {box.high:.0f}，SL {box.high - SL_USD:.0f}，TP {box.high + TP_USD:.0f}，手数 {LOT}。",
                 True,
             )
         return Signal(
@@ -233,7 +236,7 @@ def evaluate(
                 "b_short",
                 "B",
                 "B 做空回踩到了",
-                f"反弹下沿 {box.low:.2f}。Sell Limit {box.low:.0f}，SL {box.low + 15:.0f}，TP {box.low - 22:.0f}，手数 0.02。",
+                f"反弹下沿 {box.low:.2f}。Sell Limit {box.low:.0f}，SL {box.low + SL_USD:.0f}，TP {box.low - TP_USD:.0f}，手数 {LOT}。",
                 True,
             )
         return Signal(
@@ -253,7 +256,7 @@ def evaluate(
                 "a_sell",
                 "A",
                 "A 上沿可挂空",
-                f"上沿区 {box.upper_start:.2f}–{box.high:.2f}。Sell Limit {box.high - 5:.0f}，SL {box.high - 5 + 15:.0f}，TP {box.high - 5 - 22:.0f}，手数 0.02。",
+                f"上沿区 {box.upper_start:.2f}–{box.high:.2f}。Sell Limit {box.high - 5:.0f}，SL {box.high - 5 + SL_USD:.0f}，TP {box.high - 5 - TP_USD:.0f}，手数 {LOT}。",
                 True,
             )
         if price <= box.lower_end:
@@ -261,7 +264,7 @@ def evaluate(
                 "a_buy",
                 "A",
                 "A 下沿可挂多",
-                f"下沿区 {box.low:.2f}–{box.lower_end:.2f}。Buy Limit {box.low + 5:.0f}，SL {box.low + 5 - 15:.0f}，TP {box.low + 5 + 22:.0f}，手数 0.02。",
+                f"下沿区 {box.low:.2f}–{box.lower_end:.2f}。Buy Limit {box.low + 5:.0f}，SL {box.low + 5 - SL_USD:.0f}，TP {box.low + 5 + TP_USD:.0f}，手数 {LOT}。",
                 True,
             )
         return Signal(

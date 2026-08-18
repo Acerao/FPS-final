@@ -16,8 +16,10 @@ from strategy import (
     ADX_TREND_MIN,
     HWR_TP_USD,
     SL_USD,
+    SPRINT_TP_USD,
     TP_USD,
     _m15_confirmation,
+    clamp_lot,
     compute_adx,
 )
 from tzutil import BEIJING
@@ -29,7 +31,6 @@ ENTRY_END = time(1, 0)
 FLAT_END = time(1, 45)
 A_OFFSET = 5.0
 LOT = 0.02
-USD_PER_DOLLAR = 100 * LOT  # $2 per $1 at 0.02 lot
 BE_USD = 8.0
 MAX_DAY_TRADES = 2
 MAX_DAY_LOSSES = 2
@@ -101,6 +102,7 @@ class Trade:
     exit: float
     reason: str
     profile: str
+    lot: float = 0.02
 
     @property
     def pnl_usd_price(self) -> float:
@@ -110,7 +112,7 @@ class Trade:
 
     @property
     def pnl_account(self) -> float:
-        return self.pnl_usd_price * USD_PER_DOLLAR
+        return self.pnl_usd_price * 100.0 * self.lot
 
     @property
     def win(self) -> bool:
@@ -128,9 +130,16 @@ def _confirm(hist: list, side: str, need: bool) -> bool:
     return ok
 
 
-def simulate(bars: list, profile: str) -> list[Trade]:
-    need_confirm = profile == "high_winrate"
-    tp_usd = HWR_TP_USD if need_confirm else TP_USD
+def simulate(bars: list, profile: str, lot: float = LOT) -> list[Trade]:
+    lot = clamp_lot(lot)
+    need_confirm = profile in {"high_winrate", "sprint"}
+    skip_a = profile == "sprint"
+    if profile == "sprint":
+        tp_usd = SPRINT_TP_USD
+    elif need_confirm:
+        tp_usd = HWR_TP_USD
+    else:
+        tp_usd = TP_USD
     by_day: dict = defaultdict(list)
     for b in bars:
         by_day[session_date(b.ts)].append(b)
@@ -156,7 +165,7 @@ def simulate(bars: list, profile: str) -> list[Trade]:
         adx_val = adx.adx if adx else None
         last_asia_close = asia[-1].close
         already_break = last_asia_close > box_h or last_asia_close < box_l
-        allow_a = (adx_val is None or adx_val < ADX_RANGE_MAX) and not already_break
+        allow_a = (not skip_a) and (adx_val is None or adx_val < ADX_RANGE_MAX) and not already_break
         trend_day = adx_val is not None and adx_val >= ADX_TREND_MIN
 
         after = [b for b in day_bars if b.ts > asia[-1].ts]
@@ -192,7 +201,7 @@ def simulate(bars: list, profile: str) -> list[Trade]:
             if t >= FLAT_END and t < ASIA_START:
                 if open_tr:
                     side, entry, sl, tp, ets, mfe_max, be = open_tr
-                    trades.append(Trade(day, mode, side, entry, sl, tp, ets, b.ts, b.open, "01:45平", profile))
+                    trades.append(Trade(day, mode, side, entry, sl, tp, ets, b.ts, b.open, "01:45平", profile, lot))
                     open_tr = None
                 break
 
@@ -203,7 +212,7 @@ def simulate(bars: list, profile: str) -> list[Trade]:
                     be = entry
                 held_min = (b.ts - ets).total_seconds() / 60
                 if held_min >= 90 and mfe_max < 5:
-                    tr = Trade(day, mode, side, entry, sl, tp, ets, b.ts, b.close, "90分钟没动", profile)
+                    tr = Trade(day, mode, side, entry, sl, tp, ets, b.ts, b.close, "90分钟没动", profile, lot)
                     trades.append(tr)
                     day_pnl += tr.pnl_account
                     if tr.pnl_usd_price < 0:
@@ -217,7 +226,7 @@ def simulate(bars: list, profile: str) -> list[Trade]:
                 hit = exit_open(b, side, sl, tp, be)
                 if hit:
                     px, why = hit
-                    tr = Trade(day, mode, side, entry, sl, tp, ets, b.ts, px, why, profile)
+                    tr = Trade(day, mode, side, entry, sl, tp, ets, b.ts, px, why, profile, lot)
                     trades.append(tr)
                     day_pnl += tr.pnl_account
                     if tr.pnl_usd_price < 0:
@@ -284,7 +293,7 @@ def simulate(bars: list, profile: str) -> list[Trade]:
         if open_tr:
             side, entry, sl, tp, ets, mfe_max, be = open_tr
             last = after[-1] if after else asia[-1]
-            trades.append(Trade(day, mode, side, entry, sl, tp, ets, last.ts, last.close, "数据结束平", profile))
+            trades.append(Trade(day, mode, side, entry, sl, tp, ets, last.ts, last.close, "数据结束平", profile, lot))
         all_so_far.extend(day_bars)
     return trades
 
@@ -317,7 +326,8 @@ def summarize(name: str, trades: list[Trade], bars: list) -> None:
     print(f"总笔数 {n}  盈利 {len(wins)}  亏损 {len(losses)}  持平 {len(flats)}")
     print(f"含持平胜率 {wr:.1f}%  剔持平(只计盈亏) {wr_dec:.1f}%")
     print(f"平均盈利 ${avg_w:.2f}/盎司  平均亏损 ${avg_l:.2f}/盎司")
-    print(f"利润因子 {pf:.2f}  账户粗算(固定0.02手) ${acc:.0f}")
+    used_lot = trades[0].lot if trades else LOT
+    print(f"利润因子 {pf:.2f}  账户粗算(手数 {used_lot}) ${acc:.0f}")
     print(f"最大回撤(账户) ${max_dd:.0f}  有成交天数 {len({t.day for t in trades})}")
 
     by_year: dict[int, list[Trade]] = defaultdict(list)
@@ -370,14 +380,16 @@ def buy_hold(bars: list) -> None:
 def run() -> None:
     bars, _ = fetch_gc_bars("1h", "730d")
     buy_hold(bars)
-    classic = simulate(bars, "classic")
-    hwr = simulate(bars, "high_winrate")
-    summarize("原版盒子 classic  SL15/TP12  无确认K", classic, bars)
-    summarize("高胜率版 hwr  SL15/TP10  要确认K", hwr, bars)
+    classic = simulate(bars, "classic", 0.02)
+    hwr = simulate(bars, "high_winrate", 0.02)
+    sprint = simulate(bars, "sprint", 0.05)
+    summarize("原版盒子 classic  SL15/TP12  0.02手", classic, bars)
+    summarize("高胜率版 hwr  SL15/TP10  0.02手  要确认K", hwr, bars)
+    summarize("冲刺版 sprint  只做B  SL15/TP18  0.05手  要确认K", sprint, bars)
     print("\n注意:")
     print("- 这是 COMEX 黄金期货 H1，不是 MT5 XAUUSD M15，点差/滑点/大数据都没扣。")
     print("- 确认K在 H1 上比 M15 更稀，高胜率版笔数会偏少。")
-    print("- 手数固定 0.02，没有把盈利加仓。不能当未来承诺。")
+    print("- 手数按所选 lot 计算，没有把盈利再加仓。不能当未来承诺。")
 
 
 if __name__ == "__main__":

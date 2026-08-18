@@ -18,6 +18,7 @@ description: >-
 - 说网格、马丁、跌了加仓、回弹全平 → 读 [PLAYBOOK_GRID.md](PLAYBOOK_GRID.md)，评估期只用等距网格，禁止翻倍马丁
 - 说翻倍、百倍、对冲、B站/油管策略视频 → 读 [PLAYBOOK_VIDEOS.md](PLAYBOOK_VIDEOS.md)：只借结构单笔，禁止对冲/马丁/无硬止损
 - 问能赚多少、多久到 $1000、去年前年走势 → 读 [BACKTEST_HWR.md](BACKTEST_HWR.md)
+- 问短期 1k、加大手数、冲刺 → 读 [PLAYBOOK_SPRINT.md](PLAYBOOK_SPRINT.md)，用软件 `asia_box_sprint` + 手数 0.05
 
 ## 执行顺序
 

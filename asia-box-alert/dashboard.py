@@ -21,16 +21,36 @@ from scale_grid import (
 from strategy import (
     ADX_RANGE_MAX,
     ADX_TREND_MIN,
+    SL_USD,
     AdxState,
     Box,
     Signal,
     beijing_now,
+    clamp_lot,
     compute_adx,
     compute_rsi,
     evaluate,
     price_zone,
+    risk_dollars,
     session_status,
 )
+
+
+def _profile_for(strategy: str) -> str:
+    if strategy == "asia_box_hwr":
+        return "high_winrate"
+    if strategy == "asia_box_sprint":
+        return "sprint"
+    return "classic"
+
+
+def _strategy_label(strategy: str) -> str:
+    return {
+        "asia_box": "亚盘盒子",
+        "asia_box_hwr": "亚盘盒子·高胜率",
+        "asia_box_sprint": "亚盘盒子·冲刺$1k",
+        "scale_grid": "等距网格",
+    }.get(strategy, strategy)
 
 
 ENTRY_KEYS = {
@@ -101,6 +121,7 @@ def build_dashboard(
     strategy: str = "asia_box",
     grid: GridState | None = None,
     m15_bars: list[object] | None = None,
+    lot: float | None = None,
 ) -> Dashboard:
     now = beijing_now(now)
     news = news or get_news_status(now)
@@ -111,8 +132,18 @@ def build_dashboard(
     if strategy == "scale_grid":
         signal = evaluate_grid(price, grid, adx, now, news)
     else:
-        profile = "high_winrate" if strategy == "asia_box_hwr" else "classic"
-        signal = evaluate(price, box, adx, m15_close, now=now, news=news, recent_m15=m15_bars, profile=profile)
+        profile = _profile_for(strategy)
+        signal = evaluate(
+            price,
+            box,
+            adx,
+            m15_close,
+            now=now,
+            news=news,
+            recent_m15=m15_bars,
+            profile=profile,
+            lot=lot,
+        )
 
     entry_ok = signal.key in ENTRY_KEYS and not news.in_blackout
 
@@ -169,10 +200,21 @@ def build_dashboard(
         lines.append("✓ 可提醒" if entry_ok else "观察中")
         indicators_text = "\n".join(lines)
     else:
-        strat_label = "亚盘盒子·高胜率" if strategy == "asia_box_hwr" else "亚盘盒子"
+        used_lot = clamp_lot(lot)
+        sl_risk = risk_dollars(used_lot, SL_USD)
+        tp_usd = 18.0 if strategy == "asia_box_sprint" else 10.0 if strategy == "asia_box_hwr" else 12.0
+        tp_gain = tp_usd * 100.0 * used_lot
+        lot_line = (
+            f"手数 {used_lot}  单笔止损约 ${sl_risk:.0f}  止盈约 ${tp_gain:.0f}  "
+            f"两连亏约 ${sl_risk * 2:.0f}"
+        )
+        if used_lot >= 0.05:
+            lot_line += "  |  个人日损请放到 $200 内（官方 High Stakes 日损 $500）"
+        strat_label = _strategy_label(strategy)
         indicators_text = (
             f"策略 {strat_label}  |  时段 {session}  |  日型 {regime}  |  位置 {zone}\n"
             f"盒子 {box_txt}\n"
+            f"{lot_line}\n"
             f"{kline_line}\n"
             f"ADX {adx_txt}  |  RSI(M15) {rsi_txt}  |  M15收盘 {m15_txt}\n"
             f"结构 {broken}  |  大数据 {news.summary}\n"

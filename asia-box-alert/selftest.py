@@ -76,6 +76,22 @@ def run_selftest(popup: bool = False) -> int:
         print(f"[FAIL] 期望 a_buy，得到 {sig.key}")
         fail += 1
 
+    print("\n=== 冲刺版自测 ===")
+    sig = evaluate(4375, box, AdxState(18, 20, 18), 4378, now=noon, profile="sprint", lot=0.05)
+    if sig.key == "sprint_skip_a":
+        print("[OK] 冲刺版震荡日不做 A")
+        ok += 1
+    else:
+        print(f"[FAIL] 冲刺版应跳过 A，得到 {sig.key}")
+        fail += 1
+    sig = evaluate(4416, box, AdxState(35, 40, 10), 4420, now=noon, recent_m15=m15_confirm_long, profile="sprint", lot=0.05)
+    if sig.key == "b_long" and "0.05" in sig.message and "$75" in sig.message:
+        print("[OK] 冲刺版 B 回踩带 0.05 手金额")
+        ok += 1
+    else:
+        print(f"[FAIL] 冲刺 B 期望带手数金额，得到 {sig.key} {sig.message}")
+        fail += 1
+
     print("\n=== 大数据禁做自测 ===")
     fake_news = NewsStatus(
         in_blackout=True,

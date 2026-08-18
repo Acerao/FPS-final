@@ -66,7 +66,7 @@ class App:
 
         self.root = tk.Tk()
         self.root.title("亚盘盒子监测 · XAUUSD")
-        self.root.geometry("640x780")
+        self.root.geometry("700x820")
         self.root.configure(bg="#111318")
         self.root.attributes("-topmost", True)
 
@@ -87,6 +87,7 @@ class App:
         self.p_var = tk.StringVar(value=str(self.cfg.get("manual_price", "")))
         self.topmost_var = tk.BooleanVar(value=True)
         self.strategy_var = tk.StringVar(value=self.cfg.get("strategy", "asia_box"))
+        self.lot_var = tk.StringVar(value=str(self.cfg.get("lot", "0.02")))
         self.grid_side_var = tk.StringVar(value=self.cfg.get("grid_side", "long"))
         self.grid_info_var = tk.StringVar(value="")
 
@@ -142,13 +143,25 @@ class App:
             self.strategy_var,
             "asia_box",
             "asia_box_hwr",
+            "asia_box_sprint",
             "scale_grid",
             command=lambda _: self.on_strategy_change(),
         )
         self.strategy_box.pack(side="left", padx=6)
+        tk.Label(strat, text="手数", fg=muted, bg="#111318").pack(side="left", padx=(12, 0))
+        self.lot_box = tk.OptionMenu(
+            strat,
+            self.lot_var,
+            "0.02",
+            "0.03",
+            "0.05",
+            "0.07",
+            command=lambda _: self.on_lot_change(),
+        )
+        self.lot_box.pack(side="left", padx=6)
         tk.Label(
             strat,
-            text="asia_box=亚盘盒子 | asia_box_hwr=高胜率版 | scale_grid=等距网格",
+            text="高胜率=确认K  冲刺=只做B+加大手",
             fg=muted,
             bg="#111318",
             font=("Microsoft YaHei UI", 8),
@@ -279,12 +292,33 @@ class App:
             side = ""
         return GridState(side=side, anchor=anchor, layers=layers)
 
+    def _current_lot(self) -> float:
+        from strategy import clamp_lot
+
+        return clamp_lot(self.lot_var.get() or self.cfg.get("lot"))
+
+    def on_lot_change(self) -> None:
+        lot = self._current_lot()
+        self.lot_var.set(f"{lot:.2f}")
+        self.cfg["lot"] = lot
+        save_config(self.cfg)
+        from strategy import risk_dollars
+
+        self.append_log(f"手数改为 {lot:.2f}（SL$15 约亏 ${risk_dollars(lot):.0f}）")
+        if self.last_price is not None:
+            self._render(self.last_price, self.cached_price_source or "现货", beijing_now())
+
     def on_strategy_change(self) -> None:
         self.cfg["strategy"] = self.strategy_var.get()
+        if self.cfg["strategy"] == "asia_box_sprint" and self._current_lot() <= 0.021:
+            self.lot_var.set("0.05")
+            self.cfg["lot"] = 0.05
+            self.append_log("冲刺版默认手数改成 0.05（可再手动改）")
         save_config(self.cfg)
         labels = {
             "asia_box": "亚盘盒子",
             "asia_box_hwr": "亚盘盒子·高胜率",
+            "asia_box_sprint": "亚盘盒子·冲刺$1k",
             "scale_grid": "等距网格",
         }
         self.append_log("已切换策略：" + labels.get(self.cfg["strategy"], self.cfg["strategy"]))
@@ -359,6 +393,7 @@ class App:
             self.strategy_var.get() or "asia_box",
             self._grid_state(),
             self.cached_bars,
+            self._current_lot(),
         )
 
         delta = ""
@@ -623,6 +658,7 @@ def print_once() -> None:
         cfg.get("strategy", "asia_box"),
         None,
         pack.bars,
+        cfg.get("lot", 0.02),
     )
     print(dash.indicators_text)
     print(dash.news.summary)

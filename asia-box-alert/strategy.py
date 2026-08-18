@@ -23,7 +23,10 @@ CHASE_PAD = 8.0
 SL_USD = 15.0
 TP_USD = 12.0  # 高胜率默认约 0.8R；想放大单笔可改回 22
 HWR_TP_USD = 10.0  # 高胜率版：牺牲盈亏比换命中率
+SPRINT_TP_USD = 18.0  # 冲刺版：略拉盈亏比，配合更大手数
 LOT = 0.02
+MAX_LOT = 0.07
+LOT_CHOICES = (0.02, 0.03, 0.05, 0.07)
 
 
 @dataclass
@@ -86,6 +89,36 @@ def _m15_confirmation(recent_m15: list[object] | None, side: str) -> tuple[bool,
     ok = bear_engulf or bearish_shift
     reason = "阴吞噬 / 更低高点确认" if ok else "等待阴吞噬或更低高点"
     return ok, reason
+
+
+def clamp_lot(lot: float | None) -> float:
+    try:
+        value = float(lot if lot is not None else LOT)
+    except (TypeError, ValueError):
+        value = LOT
+    if value < 0.01:
+        value = 0.01
+    if value > MAX_LOT:
+        value = MAX_LOT
+    return round(value, 2)
+
+
+def dollars_per_dollar(lot: float | None = None) -> float:
+    return 100.0 * clamp_lot(lot)
+
+
+def risk_dollars(lot: float | None = None, sl_usd: float = SL_USD) -> float:
+    return sl_usd * dollars_per_dollar(lot)
+
+
+def _order_line(side: str, entry: float, sl: float, tp: float, lot: float) -> str:
+    kind = "Buy Limit" if side == "long" else "Sell Limit"
+    risk = abs(entry - sl) * dollars_per_dollar(lot)
+    reward = abs(tp - entry) * dollars_per_dollar(lot)
+    return (
+        f"{kind} {entry:.0f}，SL {sl:.0f}，TP {tp:.0f}，手数 {clamp_lot(lot)}"
+        f"（亏约 ${risk:.0f} / 盈约 ${reward:.0f}）"
+    )
 
 
 def beijing_now(now: datetime | None = None) -> datetime:
@@ -207,9 +240,17 @@ def evaluate(
     news: "NewsStatus | None" = None,
     recent_m15: list[object] | None = None,
     profile: str = "classic",
+    lot: float | None = None,
 ) -> Signal:
-    strict_confirm = profile == "high_winrate"
-    tp_usd = HWR_TP_USD if strict_confirm else TP_USD
+    lot = clamp_lot(lot)
+    skip_a = profile == "sprint"
+    strict_confirm = profile in {"high_winrate", "sprint"}
+    if profile == "sprint":
+        tp_usd = SPRINT_TP_USD
+    elif strict_confirm:
+        tp_usd = HWR_TP_USD
+    else:
+        tp_usd = TP_USD
     status = session_status(now)
     if status == "SLEEP":
         return Signal("sleep", "OFF", "已过平仓时间", "01:45 后不再提醒新单，睡着不留仓。", False)
@@ -261,7 +302,9 @@ def evaluate(
                 "b_long",
                 "B",
                 "B 做多回踩到了",
-                f"回踩上沿 {box.high:.2f}。Buy Limit {box.high:.0f}，SL {box.high - SL_USD:.0f}，TP {box.high + tp_usd:.0f}，手数 {LOT}。",
+                "回踩上沿 "
+                + f"{box.high:.2f}。"
+                + _order_line("long", box.high, box.high - SL_USD, box.high + tp_usd, lot),
                 True,
             )
         return Signal(
@@ -296,7 +339,9 @@ def evaluate(
                 "b_short",
                 "B",
                 "B 做空回踩到了",
-                f"反弹下沿 {box.low:.2f}。Sell Limit {box.low:.0f}，SL {box.low + SL_USD:.0f}，TP {box.low - tp_usd:.0f}，手数 {LOT}。",
+                "反弹下沿 "
+                + f"{box.low:.2f}。"
+                + _order_line("short", box.low, box.low + SL_USD, box.low - tp_usd, lot),
                 True,
             )
         return Signal(
@@ -311,6 +356,14 @@ def evaluate(
         return Signal("fuzzy", "WAIT", "方向模糊，宁可不做", f"ADX {adx_val:.1f} 在 22–28，盒子未破，先空仓。", False)
 
     if ranging or adx_val is None:
+        if skip_a:
+            return Signal(
+                "sprint_skip_a",
+                "WAIT",
+                "冲刺版不做 A",
+                "只等 M15 收盘破盒后回踩做 B。震荡反打在牛市里会拖慢到 $1k。",
+                False,
+            )
         if price >= box.upper_start:
             if strict_confirm:
                 ok, why = _m15_confirmation(recent_m15, "short")
@@ -326,7 +379,8 @@ def evaluate(
                 "a_sell",
                 "A",
                 "A 上沿可挂空",
-                f"上沿区 {box.upper_start:.2f}–{box.high:.2f}。Sell Limit {box.high - 5:.0f}，SL {box.high - 5 + SL_USD:.0f}，TP {box.high - 5 - tp_usd:.0f}，手数 {LOT}。",
+                f"上沿区 {box.upper_start:.2f}–{box.high:.2f}。"
+                + _order_line("short", box.high - 5, box.high - 5 + SL_USD, box.high - 5 - tp_usd, lot),
                 True,
             )
         if price <= box.lower_end:
@@ -344,7 +398,8 @@ def evaluate(
                 "a_buy",
                 "A",
                 "A 下沿可挂多",
-                f"下沿区 {box.low:.2f}–{box.lower_end:.2f}。Buy Limit {box.low + 5:.0f}，SL {box.low + 5 - SL_USD:.0f}，TP {box.low + 5 + tp_usd:.0f}，手数 {LOT}。",
+                f"下沿区 {box.low:.2f}–{box.lower_end:.2f}。"
+                + _order_line("long", box.low + 5, box.low + 5 - SL_USD, box.low + 5 + tp_usd, lot),
                 True,
             )
         return Signal(

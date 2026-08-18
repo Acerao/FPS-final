@@ -74,6 +74,10 @@ class App:
         muted = "#9aa3b2"
         font_ui = ("Microsoft YaHei UI", 10)
         font_big = ("Microsoft YaHei UI", 28, "bold")
+        self._font_ui = font_ui
+        self._font_big = font_big
+        self._font_big_compact = ("Microsoft YaHei UI", 18, "bold")
+        self._font_ui_compact = ("Microsoft YaHei UI", 9)
 
         self.price_var = tk.StringVar(value="--")
         self.mode_var = tk.StringVar(value="启动中")
@@ -91,10 +95,15 @@ class App:
         self.grid_side_var = tk.StringVar(value=self.cfg.get("grid_side", "long"))
         self.grid_info_var = tk.StringVar(value="")
 
-        tk.Label(self.root, text="现货黄金", fg=muted, bg="#111318", font=font_ui).pack(pady=(12, 0))
-        tk.Label(self.root, textvariable=self.price_var, fg="#f4d35e", bg="#111318", font=font_big).pack()
-        tk.Label(self.root, textvariable=self.tick_var, fg="#7ee787", bg="#111318", font=font_ui).pack()
-        tk.Label(self.root, textvariable=self.mode_var, fg="#7ee787", bg="#111318", font=("Microsoft YaHei UI", 15, "bold")).pack(pady=4)
+        # 用于“小窗极简显示”的组件引用
+        self.price_title_label = tk.Label(self.root, text="现货黄金", fg=muted, bg="#111318", font=font_ui)
+        self.price_title_label.pack(pady=(12, 0))
+        self.price_label = tk.Label(self.root, textvariable=self.price_var, fg="#f4d35e", bg="#111318", font=font_big)
+        self.price_label.pack()
+        self.tick_label = tk.Label(self.root, textvariable=self.tick_var, fg="#7ee787", bg="#111318", font=font_ui)
+        self.tick_label.pack()
+        self.mode_label = tk.Label(self.root, textvariable=self.mode_var, fg="#7ee787", bg="#111318", font=("Microsoft YaHei UI", 15, "bold"))
+        self.mode_label.pack(pady=4)
 
         ind = tk.Label(
             self.root,
@@ -107,7 +116,8 @@ class App:
             padx=12,
             pady=10,
         )
-        ind.pack(fill="x", padx=16, pady=6)
+        self.ind_label = ind
+        self.ind_label.pack(fill="x", padx=16, pady=6)
 
         news = tk.Label(
             self.root,
@@ -120,7 +130,8 @@ class App:
             padx=12,
             pady=8,
         )
-        news.pack(fill="x", padx=16, pady=4)
+        self.news_label = news
+        self.news_label.pack(fill="x", padx=16, pady=4)
 
         msg = tk.Label(
             self.root,
@@ -133,7 +144,8 @@ class App:
             padx=12,
             pady=10,
         )
-        msg.pack(fill="x", padx=16, pady=6)
+        self.msg_label = msg
+        self.msg_label.pack(fill="x", padx=16, pady=6)
         self.chart = tk.Canvas(
             self.root,
             width=660,
@@ -145,6 +157,7 @@ class App:
         self.chart.pack(fill="x", padx=16, pady=(2, 6))
 
         strat = tk.Frame(self.root, bg="#111318")
+        self.strat_frame = strat
         strat.pack(fill="x", padx=16, pady=(8, 0))
         tk.Label(strat, text="策略", fg=muted, bg="#111318").pack(side="left")
         self.strategy_box = tk.OptionMenu(
@@ -155,6 +168,7 @@ class App:
             "asia_box_sprint",
             "asia_box_lines",
             "asia_box_lines_h1",
+            "asia_box_dual_lines_hwr",
             "scale_grid",
             command=lambda _: self.on_strategy_change(),
         )
@@ -179,6 +193,7 @@ class App:
         ).pack(side="left")
 
         form = tk.Frame(self.root, bg="#111318")
+        self.form_frame = form
         form.pack(fill="x", padx=16)
         tk.Label(form, text="ASIA_H", fg=muted, bg="#111318").grid(row=0, column=0, sticky="w")
         tk.Entry(form, textvariable=self.h_var, width=10).grid(row=0, column=1, padx=4)
@@ -188,6 +203,7 @@ class App:
         tk.Button(form, text="自动盒子", command=self.clear_box).grid(row=0, column=5, padx=2)
 
         form2 = tk.Frame(self.root, bg="#111318")
+        self.form2_frame = form2
         form2.pack(fill="x", padx=16, pady=(4, 0))
         tk.Label(form2, text="MT5现价", fg=muted, bg="#111318").grid(row=0, column=0, sticky="w")
         tk.Entry(form2, textvariable=self.p_var, width=10).grid(row=0, column=1, padx=4)
@@ -201,6 +217,7 @@ class App:
         ).grid(row=0, column=3, columnspan=3, sticky="w", padx=4)
 
         gridf = tk.Frame(self.root, bg="#111318")
+        self.grid_frame = gridf
         gridf.pack(fill="x", padx=16, pady=(6, 0))
         tk.Label(gridf, text="网格方向", fg=muted, bg="#111318").grid(row=0, column=0, sticky="w")
         tk.OptionMenu(gridf, self.grid_side_var, "long", "short").grid(row=0, column=1, padx=4)
@@ -216,6 +233,7 @@ class App:
         ).grid(row=1, column=0, columnspan=5, sticky="w", pady=(2, 0))
 
         opts = tk.Frame(self.root, bg="#111318")
+        self.opts_frame = opts
         opts.pack(fill="x", padx=16, pady=8)
         tk.Checkbutton(
             opts,
@@ -232,11 +250,18 @@ class App:
         tk.Button(opts, text="更新程序", command=self.update_program).pack(side="right", padx=4)
         tk.Button(opts, text="运行自测", command=self.run_selftest).pack(side="right")
 
-        tk.Label(self.root, textvariable=self.status_var, fg=muted, bg="#111318", font=("Microsoft YaHei UI", 9)).pack(
-            side="bottom", pady=6
-        )
+        self.status_label = tk.Label(self.root, textvariable=self.status_var, fg=muted, bg="#111318", font=("Microsoft YaHei UI", 9))
+        self.status_label.pack(side="bottom", pady=6)
         self.log = tk.Text(self.root, height=7, bg="#0d1017", fg="#c8d0dc", insertbackground="white", borderwidth=0)
         self.log.pack(fill="both", expand=True, padx=16, pady=(0, 10))
+
+        # 监听缩放：小窗时只保留实时金价
+        self._compact_mode = False
+        self.root.bind("<Configure>", self._on_resize)
+
+        # 初始判定一次
+        self.root.update_idletasks()
+        self._set_compact_mode(False)
 
         self.root.after(300, self.refresh_price)
         self.root.after(800, self.refresh_bars)
@@ -244,6 +269,57 @@ class App:
 
     def toggle_topmost(self) -> None:
         self.root.attributes("-topmost", bool(self.topmost_var.get()))
+
+    def _on_resize(self, _evt=None) -> None:
+        """窗口变小后进入“极简实时金价”模式。"""
+        try:
+            w = self.root.winfo_width()
+            h = self.root.winfo_height()
+        except Exception:
+            return
+        compact = w < 360 or h < 240
+        self._set_compact_mode(compact)
+
+    def _set_compact_mode(self, compact: bool) -> None:
+        if compact == self._compact_mode:
+            return
+        self._compact_mode = compact
+
+        if compact:
+            # 只保留：标题 + 现价 + 小提示（tick）
+            self.mode_label.pack_forget()
+            self.ind_label.pack_forget()
+            self.news_label.pack_forget()
+            self.msg_label.pack_forget()
+            self.chart.pack_forget()
+            self.strat_frame.pack_forget()
+            self.form_frame.pack_forget()
+            self.form2_frame.pack_forget()
+            self.grid_frame.pack_forget()
+            self.opts_frame.pack_forget()
+            self.status_label.pack_forget()
+            self.log.pack_forget()
+            self.price_label.configure(font=("Microsoft YaHei UI", 18, "bold"))
+            self.tick_label.configure(font=("Microsoft YaHei UI", 9))
+            self.root.geometry("360x140")
+        else:
+            # 恢复原界面
+            self.price_label.configure(font=self._font_big)
+            self.tick_label.configure(font=self._font_ui)
+            self.mode_label.configure(font=("Microsoft YaHei UI", 15, "bold"))
+            self.mode_label.pack(pady=4)
+            self.ind_label.pack(fill="x", padx=16, pady=6)
+            self.news_label.pack(fill="x", padx=16, pady=4)
+            self.msg_label.pack(fill="x", padx=16, pady=6)
+            self.chart.pack(fill="x", padx=16, pady=(2, 6))
+            self.strat_frame.pack(fill="x", padx=16, pady=(8, 0))
+            self.form_frame.pack(fill="x", padx=16)
+            self.form2_frame.pack(fill="x", padx=16, pady=(4, 0))
+            self.grid_frame.pack(fill="x", padx=16, pady=(6, 0))
+            self.opts_frame.pack(fill="x", padx=16, pady=8)
+            self.status_label.pack(side="bottom", pady=6)
+            self.log.pack(fill="both", expand=True, padx=16, pady=(0, 10))
+            self.root.geometry("700x820")
 
     def _parse_manual(self) -> tuple[float | None, float | None]:
         try:
@@ -332,6 +408,7 @@ class App:
             "asia_box_sprint": "亚盘盒子·冲刺$1k",
             "asia_box_lines": "画线策略·H8风格",
             "asia_box_lines_h1": "画线策略·小时级",
+            "asia_box_dual_lines_hwr": "双策略·画线+高胜率",
             "scale_grid": "等距网格",
         }
         self.append_log("已切换策略：" + labels.get(self.cfg["strategy"], self.cfg["strategy"]))
@@ -446,7 +523,7 @@ class App:
     def _draw_chart(self, dash) -> None:
         self.chart.delete("all")
         strategy = self.strategy_var.get()
-        if strategy not in {"asia_box_lines", "asia_box_lines_h1"}:
+        if strategy not in {"asia_box_lines", "asia_box_lines_h1", "asia_box_dual_lines_hwr"}:
             self.chart.create_text(
                 330,
                 115,
@@ -458,6 +535,7 @@ class App:
 
         # asia_box_lines: 直接用当前缓存 K线（实际为 M15）
         # asia_box_lines_h1: 把 M15 聚合成 H1，用于更贴近“小时级画线单”的尺度
+        # asia_box_dual_lines_hwr: 图表按 asia_box_lines（M15）显示
         base_m15 = self.cached_bars[-240:] if self.cached_bars else []
         if strategy == "asia_box_lines_h1":
             bars = aggregate_bars(base_m15, 60)

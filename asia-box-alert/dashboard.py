@@ -53,6 +53,7 @@ def _strategy_label(strategy: str) -> str:
         "asia_box_sprint": "亚盘盒子·冲刺$1k",
         "asia_box_lines": "画线策略·大熊式",
         "asia_box_lines_h1": "画线策略·小时级",
+        "asia_box_dual_lines_hwr": "双策略·画线 + 高胜率",
         "scale_grid": "等距网格",
     }.get(strategy, strategy)
 
@@ -322,6 +323,58 @@ def build_dashboard(
         else:
             line_close = float(getattr(line_bars[-1], "close", None))
             signal, line_overlay = _line_mode_signal(price, line_bars, clamp_lot(lot))
+    elif strategy == "asia_box_dual_lines_hwr":
+        used_lot = clamp_lot(lot)
+        line_close = m15_close
+
+        # 1) 画线（用 asia_box_lines 的尺度：直接用当前缓存 K 线）
+        line_bars = m15_bars[-120:] if m15_bars else []
+        if len(line_bars) < 20:
+            line_sig = Signal("line_wait", "LINES", "画线数据不足", "K线不足，至少需要约 20 根再画线。", False)
+            line_overlay = None
+        else:
+            line_sig, line_overlay = _line_mode_signal(price, line_bars, used_lot)
+
+        # 2) 高胜率（HWR）
+        profile = _profile_for("asia_box_hwr")
+        hwr_sig = evaluate(
+            price,
+            box,
+            adx,
+            m15_close,
+            now=now,
+            news=news,
+            recent_m15=m15_bars,
+            profile=profile,
+            lot=used_lot,
+        )
+
+        line_is_entry = line_sig.key in ENTRY_KEYS
+        hwr_is_entry = hwr_sig.key in ENTRY_KEYS
+
+        # 选一个“真正能提醒入场”的信号作为主提醒
+        if line_is_entry and hwr_is_entry:
+            # 同时触发：优先返回高胜率 key，但消息里把两者都写清楚
+            signal = Signal(
+                hwr_sig.key,
+                _strategy_label(strategy),
+                "双触发：画线 + 高胜率",
+                f"[画线] {line_sig.title}\n{line_sig.message}\n\n[高胜率] {hwr_sig.title}\n{hwr_sig.message}",
+                True,
+            )
+        elif hwr_is_entry:
+            signal = hwr_sig
+        elif line_is_entry:
+            signal = line_sig
+        else:
+            # 都未入场：优先返回高胜率提示（若需要也能看到画线提示）
+            signal = Signal(
+                "dual_wait",
+                _strategy_label(strategy),
+                "双策略：等待入场条件",
+                f"[画线] {line_sig.title}\n{line_sig.message}\n\n[高胜率] {hwr_sig.title}\n{hwr_sig.message}",
+                False,
+            )
     else:
         profile = _profile_for(strategy)
         signal = evaluate(
@@ -401,6 +454,19 @@ def build_dashboard(
             f"手数 {used_lot}  单笔止损约 ${sl_risk:.0f}  |  原理：2点连线+破位收盘+等回踩\n"
             f"{kline_line}\n"
             f"ADX {adx_txt}  |  RSI(M15) {rsi_txt}  |  {tf_txt}收盘 {line_txt}\n"
+            f"建议 {'✓ 可提醒' if entry_ok else '✗ 等待'}"
+        )
+    elif strategy == "asia_box_dual_lines_hwr":
+        used_lot = clamp_lot(lot)
+        sl_risk = risk_dollars(used_lot, SL_USD)
+        indicators_text = (
+            f"策略 {_strategy_label(strategy)}  |  时段 {session}  |  位置 {zone}\n"
+            f"手数 {used_lot}  单笔止损约 ${sl_risk:.0f}\n"
+            f"同时运行：\n"
+            f"- 画线（asia_box_lines）\n"
+            f"- 高胜率（asia_box_hwr）\n"
+            f"{kline_line}\n"
+            f"ADX {adx_txt}  |  RSI(M15) {rsi_txt}  |  M15收盘 {m15_txt}\n"
             f"建议 {'✓ 可提醒' if entry_ok else '✗ 等待'}"
         )
     else:

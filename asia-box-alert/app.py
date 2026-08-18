@@ -60,6 +60,7 @@ class App:
         self.cached_news = get_news_status()
         self.cached_bar_src = ""
         self.cached_bar_note = ""
+        self.cached_adx_tf = "M15"
         self._bar_log = ""
 
         self.root = tk.Tk()
@@ -250,6 +251,7 @@ class App:
             now,
             self.cached_bar_src,
             self.cached_bar_note,
+            getattr(self, "cached_adx_tf", "M15"),
         )
 
         delta = ""
@@ -318,18 +320,22 @@ class App:
             auto = asia_high_low(pack.bars, beijing_now()) if pack.bars else None
             adx = rsi = last_close = None
             if pack.bars:
-                closes = [b.close for b in pack.bars]
-                adx = compute_adx(
-                    [b.high for b in pack.bars],
-                    [b.low for b in pack.bars],
-                    closes,
-                )
-                rsi = compute_rsi(closes)
+                rsi_closes = [b.close for b in pack.bars]
+                rsi = compute_rsi(rsi_closes)
                 closed = last_closed_m15(pack.bars)
                 last_close = closed.close if closed else None
+            adx_series = pack.adx_bars or pack.bars
+            if adx_series:
+                adx = compute_adx(
+                    [b.high for b in adx_series],
+                    [b.low for b in adx_series],
+                    [b.close for b in adx_series],
+                )
             self.root.after(
                 0,
-                lambda: self._apply_bars(pack.source, pack.note, auto, adx, rsi, last_close),
+                lambda: self._apply_bars(
+                    pack.source, pack.note, auto, adx, rsi, last_close, pack.adx_tf
+                ),
             )
         except Exception as exc:
             self.root.after(0, lambda e=str(exc): self._fail_bars(e))
@@ -359,7 +365,7 @@ class App:
         self.news_busy = False
         self.news_var.set(f"📰 日历拉取失败：{err}")
 
-    def _apply_bars(self, bar_src, bar_note, auto, adx, rsi, last_close) -> None:
+    def _apply_bars(self, bar_src, bar_note, auto, adx, rsi, last_close, adx_tf="M15") -> None:
         self.bar_busy = False
         self.cached_adx = adx
         self.cached_rsi = rsi
@@ -367,6 +373,7 @@ class App:
         self.cached_auto_box = auto
         self.cached_bar_src = bar_src
         self.cached_bar_note = bar_note
+        self.cached_adx_tf = adx_tf
         log_line = f"{bar_src} | {bar_note}" if bar_note else bar_src
         if log_line and log_line != self._bar_log:
             self._bar_log = log_line
@@ -483,13 +490,28 @@ def print_once() -> None:
     pack = get_indicator_bars()
     adx = rsi = last_close = None
     if pack.bars:
-        closes = [b.close for b in pack.bars]
-        adx = compute_adx([b.high for b in pack.bars], [b.low for b in pack.bars], closes)
-        rsi = compute_rsi(closes)
+        rsi = compute_rsi([b.close for b in pack.bars])
         closed = last_closed_m15(pack.bars)
         last_close = closed.close if closed else None
+    adx_series = pack.adx_bars or pack.bars
+    if adx_series:
+        adx = compute_adx(
+            [b.high for b in adx_series],
+            [b.low for b in adx_series],
+            [b.close for b in adx_series],
+        )
     dash = build_dashboard(
-        price, box, box_src, adx, rsi, last_close, None, now, pack.source, pack.note
+        price,
+        box,
+        box_src,
+        adx,
+        rsi,
+        last_close,
+        None,
+        now,
+        pack.source,
+        pack.note,
+        pack.adx_tf,
     )
     print(dash.indicators_text)
     print(dash.news.summary)

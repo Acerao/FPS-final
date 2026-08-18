@@ -22,6 +22,7 @@ def run_selftest(popup: bool = False) -> int:
         ("A中间空仓", 4395, AdxState(18, 20, 18), 4390, "a_mid"),
         ("B回踩多", 4416, AdxState(35, 40, 10), 4420, "b_long"),
         ("B不追多", 4430, AdxState(35, 40, 10), 4425, "b_no_chase_long"),
+        ("无ADX仍按A下沿", 4375, None, 4378, "a_buy"),
     ]
     print("=== 策略信号自测 ===")
     for name, price, adx, m15, expect_key in cases:
@@ -144,10 +145,31 @@ def run_selftest(popup: bool = False) -> int:
 
         pack = get_indicator_bars()
         if pack.bars and len(pack.bars) >= 5:
-            print(f"[OK] 在线K线 {pack.source} {len(pack.bars)}根")
+            print(f"[OK] 在线K线 {pack.source} {len(pack.bars)}根 ADX周期={pack.adx_tf}")
             ok += 1
         else:
             print(f"[FAIL] 在线K线不足: {pack.source} {pack.note}")
+            fail += 1
+        from strategy import compute_adx as _adx, compute_rsi as _rsi
+
+        if pack.adx_bars:
+            st = _adx(
+                [b.high for b in pack.adx_bars],
+                [b.low for b in pack.adx_bars],
+                [b.close for b in pack.adx_bars],
+            )
+            if st is not None:
+                print(f"[OK] ADX({pack.adx_tf})={st.adx:.1f}")
+                ok += 1
+            else:
+                print("[FAIL] 有ADX序列却算不出")
+                fail += 1
+        rsi_v = _rsi([b.close for b in pack.bars]) if pack.bars else None
+        if rsi_v is not None:
+            print(f"[OK] RSI={rsi_v:.1f}（入场不看RSI）")
+            ok += 1
+        else:
+            print("[FAIL] RSI 仍为空")
             fail += 1
     except Exception as exc:
         print(f"[SKIP] 在线K线: {exc}")

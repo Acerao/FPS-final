@@ -40,6 +40,7 @@ class Dashboard:
     entry_ok: bool
     bar_src: str
     bar_note: str
+    adx_tf: str
     indicators_text: str
 
 
@@ -74,6 +75,7 @@ def build_dashboard(
     now=None,
     bar_src: str = "",
     bar_note: str = "",
+    adx_tf: str = "M15",
 ) -> Dashboard:
     now = beijing_now(now)
     news = news or get_news_status(now)
@@ -85,7 +87,11 @@ def build_dashboard(
     entry_ok = signal.key in ENTRY_KEYS and not news.in_blackout
 
     rsi_txt = f"{rsi:.1f}" if rsi is not None else "--"
-    adx_txt = f"{adx.adx:.1f} (+DI {adx.plus_di:.1f} / -DI {adx.minus_di:.1f})" if adx else "--"
+    if adx:
+        tf = f"{adx_tf}" if adx_tf else "M15"
+        adx_txt = f"{adx.adx:.1f}({tf}) (+DI {adx.plus_di:.1f} / -DI {adx.minus_di:.1f})"
+    else:
+        adx_txt = "--"
     m15_txt = f"{m15_close:.2f}" if m15_close is not None else "--"
     box_txt = (
         f"H {box.high:.1f}  L {box.low:.1f}  RANGE {box.range:.1f}  [{box_src}]"
@@ -99,13 +105,13 @@ def build_dashboard(
 
     missing: list[str] = []
     if adx is None:
-        missing.append("ADX 需约 16 根 M15")
+        missing.append("ADX 需约 28 根 M15（或改用 M5）")
     if rsi is None:
-        missing.append("RSI 需约 15 根 M15")
+        missing.append("RSI 需约 15 根 M15（入场不看 RSI）")
     if m15_close is None:
         missing.append("M15收盘 需至少 2 根 K 线")
-    if missing and bar_src.startswith("本地"):
-        kline_line += f"\n⏳ {' · '.join(missing)}（程序保持运行会自动补齐）"
+    if missing:
+        kline_line += f"\n⏳ {' · '.join(missing)}"
 
     indicators_text = (
         f"时段 {session}  |  日型 {regime}  |  位置 {zone}\n"
@@ -132,5 +138,6 @@ def build_dashboard(
         entry_ok=entry_ok,
         bar_src=bar_src,
         bar_note=bar_note,
+        adx_tf=adx_tf,
         indicators_text=indicators_text,
     )

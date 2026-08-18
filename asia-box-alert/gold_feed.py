@@ -309,8 +309,8 @@ def aggregate_bars(bars: list[Bar], minutes: int) -> list[Bar]:
     return sorted(buckets.values(), key=lambda x: x.ts)
 
 
-def fetch_em_trend_bars(minutes: int = 15) -> list[Bar]:
-    """Build M15 from Eastmoney 1-minute trends (kline history is often empty for XAU)."""
+def fetch_em_minute_bars() -> list[Bar]:
+    """Eastmoney 1-minute trends for international gold."""
     path = (
         "/api/qt/stock/trends2/get?secid=122.XAU"
         "&fields1=f1,f2,f3,f4,f5,f6,f7,f8,f9,f10,f11,f12,f13"
@@ -331,17 +331,16 @@ def fetch_em_trend_bars(minutes: int = 15) -> list[Bar]:
                 o, c, h, l = (float(parts[1]), float(parts[2]), float(parts[3]), float(parts[4]))
                 high, low = max(o, c, h, l), min(o, c, h, l)
                 m1.append(Bar(ts=ts, open=o, high=high, low=low, close=c))
-            bars = aggregate_bars(m1, minutes)
-            if len(bars) >= 5:
-                return bars
-            last_err = RuntimeError(f"too few bars: {len(bars)}")
+            if len(m1) >= 20:
+                return m1
+            last_err = RuntimeError(f"too few minutes: {len(m1)}")
         except Exception as exc:
             last_err = exc
     raise RuntimeError(f"eastmoney trends: {last_err}") from last_err
 
 
-def fetch_sina_min_bars(minutes: int = 15) -> list[Bar]:
-    """Build M15 from Sina XAU 1-minute line (国内可连)."""
+def fetch_sina_minute_bars() -> list[Bar]:
+    """Sina XAU 1-minute line."""
     url = (
         "https://stock2.finance.sina.com.cn/futures/api/openapi.php/"
         "GlobalFuturesService.getGlobalFuturesMinLine?symbol=XAU"
@@ -358,7 +357,22 @@ def fetch_sina_min_bars(minutes: int = 15) -> list[Bar]:
         except (TypeError, ValueError):
             continue
         m1.append(Bar(ts=ts, open=price, high=price, low=price, close=price))
-    bars = aggregate_bars(m1, minutes)
+    if len(m1) < 20:
+        raise RuntimeError(f"sina min too few: {len(m1)}")
+    return m1
+
+
+def fetch_em_trend_bars(minutes: int = 15) -> list[Bar]:
+    """Build M15/M5 from Eastmoney 1-minute trends."""
+    bars = aggregate_bars(fetch_em_minute_bars(), minutes)
+    if len(bars) < 5:
+        raise RuntimeError(f"too few bars: {len(bars)}")
+    return bars
+
+
+def fetch_sina_min_bars(minutes: int = 15) -> list[Bar]:
+    """Build M15/M5 from Sina XAU 1-minute line."""
+    bars = aggregate_bars(fetch_sina_minute_bars(), minutes)
     if len(bars) < 5:
         raise RuntimeError(f"sina min too few: {len(bars)}")
     return bars

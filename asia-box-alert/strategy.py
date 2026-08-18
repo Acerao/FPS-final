@@ -17,6 +17,7 @@ FLAT_END = time(1, 45)
 
 ADX_RANGE_MAX = 22.0
 ADX_TREND_MIN = 28.0
+ADX_MIN_BARS = 28  # Wilder: 14 根种子 ATR + 14 根种子 DX
 PULLBACK_TOL = 3.0  # dollars from breakout level
 CHASE_PAD = 8.0
 
@@ -79,7 +80,7 @@ class AdxState:
 
 def compute_adx(highs: list[float], lows: list[float], closes: list[float], period: int = 14) -> AdxState | None:
     n = min(len(highs), len(lows), len(closes))
-    if n < period + 2:
+    if n < ADX_MIN_BARS:
         return None
     trs: list[float] = []
     plus_dm: list[float] = []

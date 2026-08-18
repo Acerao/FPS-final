@@ -1,5 +1,6 @@
 Option Explicit
-Dim fso, sh, dir, pythonw, python, cmd
+' Double-click launcher. Uses the same py -3 / python logic as run.bat.
+Dim fso, sh, dir, cmd, rc
 Set fso = CreateObject("Scripting.FileSystemObject")
 Set sh = CreateObject("WScript.Shell")
 dir = fso.GetParentFolderName(WScript.ScriptFullName)
@@ -10,34 +11,17 @@ If Not fso.FileExists(dir & "\app.py") Then
   WScript.Quit 1
 End If
 
-pythonw = sh.ExpandEnvironmentStrings("%LOCALAPPDATA%\Python\pythoncore-3.14-64\pythonw.exe")
-python = sh.ExpandEnvironmentStrings("%LOCALAPPDATA%\Python\pythoncore-3.14-64\python.exe")
+' 1) py -3  (same as run.bat on your new PC)
+cmd = "cmd /c cd /d """ & dir & """ && py -3 app.py"
+rc = sh.Run(cmd, 0, True)
+If rc = 0 Then WScript.Quit 0
 
-On Error Resume Next
+' 2) python
+cmd = "cmd /c cd /d """ & dir & """ && python app.py"
+rc = sh.Run(cmd, 0, True)
+If rc = 0 Then WScript.Quit 0
 
-If fso.FileExists(pythonw) Then
-  sh.Run """" & pythonw & """ """ & dir & "\app.py""", 0, False
-  If Err.Number = 0 Then WScript.Quit 0
-  Err.Clear
-End If
-
-cmd = "py -3w """ & dir & "\app.py"""
-sh.Run cmd, 0, False
-If Err.Number = 0 Then WScript.Quit 0
-Err.Clear
-
-cmd = "pythonw """ & dir & "\app.py"""
-sh.Run cmd, 0, False
-If Err.Number = 0 Then WScript.Quit 0
-Err.Clear
-
-If fso.FileExists(python) Then
-  sh.Run """" & python & """ """ & dir & "\app.py""", 1, False
-  If Err.Number = 0 Then WScript.Quit 0
-  Err.Clear
-End If
-
-sh.Run "cmd /k py -3 """ & dir & "\app.py""", 1, False
-If Err.Number <> 0 Then
-  MsgBox "Cannot start Python. Install Python from python.org and check PATH.", 16, "AsiaBox"
-End If
+' 3) show run.bat so you can read the error
+MsgBox "open.vbs could not start Python." & vbCrLf & vbCrLf & _
+  "Opening run.bat instead. Install Python from python.org and check Add to PATH.", 48, "AsiaBox"
+sh.Run """" & dir & "\run.bat""", 1, False

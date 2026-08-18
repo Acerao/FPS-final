@@ -8,7 +8,9 @@ Windows 桌面小工具：实时拉黄金现货价，按 **A 震荡 / B 单边**
 
 1. 安装 [Python 3.10+](https://www.python.org/downloads/)，勾选 **Add python.exe to PATH**（只需一次）
 2. 打开 `asia-box-alert` 文件夹
-3. **双击 `open.vbs`**
+3. **双击 `open.vbs`**（推荐，无黑窗口）
+
+   若没反应，改双击 **`launch.bat`** 或 **`run.bat`**（有黑窗口但最稳）
 
 不要双击 `python.exe`，也不要双击 `app.py`。
 

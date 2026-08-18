@@ -15,22 +15,37 @@ class BarPack:
     note: str
 
 
+def _reference_spot() -> float | None:
+    try:
+        price, _ = fetch_spot()
+        return price
+    except Exception:
+        history = get_history()
+        last = history.last_tick()
+        if last:
+            return last[1]
+        return None
+
+
 def get_indicator_bars() -> BarPack:
+    """Never raises — always returns a BarPack (bars may be empty)."""
     history = get_history()
-    spot, _ = fetch_spot()
+    spot = _reference_spot()
+    yahoo_err = ""
 
     # 1) Yahoo GC=F M15
-    try:
-        raw, fut_last = fetch_gc_bars("15m", "5d")
-        bars = shift_bars(raw, spot - fut_last)
-        if len(bars) >= 20:
-            return BarPack(bars, "雅虎 M15", "K线来自 Yahoo，与 MT5 可能差几美元")
-        if len(bars) >= 5:
-            return BarPack(bars, f"雅虎 M15 ({len(bars)}根)", "K线偏少，指标仅供参考")
-    except Exception as exc:
-        yahoo_err = str(exc)
+    if spot is not None:
+        try:
+            raw, fut_last = fetch_gc_bars("15m", "5d")
+            bars = shift_bars(raw, spot - fut_last)
+            if len(bars) >= 20:
+                return BarPack(bars, "雅虎 M15", "K线来自 Yahoo，与 MT5 可能差几美元")
+            if len(bars) >= 5:
+                return BarPack(bars, f"雅虎 M15 ({len(bars)}根)", "K线偏少，指标仅供参考")
+        except Exception as exc:
+            yahoo_err = str(exc)
     else:
-        yahoo_err = ""
+        yahoo_err = "现货不可用，跳过雅虎 K 线"
 
     # 2) Local M15 from spot ticks
     m15 = history.m15_bars()
@@ -58,4 +73,6 @@ def get_indicator_bars() -> BarPack:
     if yahoo_err:
         note += f" 雅虎失败: {yahoo_err[:60]}"
     note += f" 已采样 {history.tick_count} 次，约每 15 分钟 +1 根 M15。"
+    if spot is None and history.tick_count == 0:
+        note += " 网络全断时请填 MT5 现价并点「应用现价」。"
     return BarPack(m15 or m5, "暂无K线", note)

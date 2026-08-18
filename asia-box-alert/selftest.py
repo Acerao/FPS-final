@@ -78,6 +78,18 @@ def run_selftest(popup: bool = False) -> int:
         print(f"[FAIL] M5 聚合不足: {len(m5)}")
         fail += 1
 
+    print("\n=== 报价回退自测 ===")
+    from gold_feed import save_spot_cache, load_spot_cache
+
+    save_spot_cache(4400.0, "test")
+    cached = load_spot_cache()
+    if cached and abs(cached[0] - 4400.0) < 0.01:
+        print("[OK] 报价磁盘缓存可读")
+        ok += 1
+    else:
+        print("[FAIL] 报价缓存")
+        fail += 1
+
     print("\n=== 入场提醒键自测 ===")
     for key in ENTRY_KEYS:
         print(f"  会弹提醒: {key}")

@@ -7,14 +7,18 @@ from datetime import datetime, time, timedelta
 import json
 import ssl
 import time as time_mod
-from typing import Any
+from pathlib import Path
+from typing import Any, Callable
 from urllib.error import URLError
 from urllib.request import Request, urlopen
 
 from tzutil import BEIJING
 
+ROOT = Path(__file__).resolve().parent
+CACHE_FILE = ROOT / "last_spot.json"
+
 UA = {
-    "User-Agent": "Mozilla/5.0 AsiaBoxAlert/1.1",
+    "User-Agent": "Mozilla/5.0 AsiaBoxAlert/1.2",
     "Accept": "application/json",
 }
 
@@ -56,12 +60,124 @@ def _get_json(url: str, timeout: float = 8) -> Any:
     raise RuntimeError(f"network error: {last}") from last
 
 
-def fetch_spot() -> tuple[float, str]:
+def save_spot_cache(price: float, source: str, when: datetime | None = None) -> None:
+    when = when or datetime.now(BEIJING)
+    if when.tzinfo is None:
+        when = when.replace(tzinfo=BEIJING)
+    try:
+        CACHE_FILE.write_text(
+            json.dumps(
+                {"price": price, "source": source, "ts": when.isoformat()},
+                ensure_ascii=False,
+            ),
+            encoding="utf-8",
+        )
+    except OSError:
+        pass
+
+
+def load_spot_cache(max_age_hours: float = 72) -> tuple[float, str, datetime] | None:
+    if not CACHE_FILE.exists():
+        return None
+    try:
+        raw = json.loads(CACHE_FILE.read_text(encoding="utf-8"))
+        ts = datetime.fromisoformat(raw["ts"])
+        if ts.tzinfo is None:
+            ts = ts.replace(tzinfo=BEIJING)
+        if datetime.now(BEIJING) - ts > timedelta(hours=max_age_hours):
+            return None
+        return float(raw["price"]), str(raw["source"]), ts
+    except (json.JSONDecodeError, KeyError, ValueError, TypeError):
+        return None
+
+
+def _yahoo_spot(symbol: str) -> float:
+    urls = [
+        f"https://query1.finance.yahoo.com/v8/finance/chart/{symbol}?interval=1m&range=1d",
+        f"https://query2.finance.yahoo.com/v8/finance/chart/{symbol}?interval=1m&range=1d",
+    ]
+    last: Exception | None = None
+    for url in urls:
+        try:
+            data = _get_json(url)
+            meta = data["chart"]["result"][0]["meta"]
+            price = float(meta["regularMarketPrice"])
+            if price > 0:
+                return price
+        except Exception as exc:
+            last = exc
+    raise RuntimeError(f"yahoo {symbol}: {last}") from last
+
+
+def _spot_gold_api() -> float:
     data = _get_json("https://api.gold-api.com/price/XAU")
     price = float(data["price"])
     if price <= 0:
         raise RuntimeError("spot price invalid")
-    return price, "gold-api.com XAU"
+    return price
+
+
+def _spot_xaus() -> float:
+    data = _get_json("https://xaus.com/api/v1/spot?currency=USD&unit=oz")
+    price = float(data["xau"]["price"])
+    if price <= 0:
+        raise RuntimeError("xaus price invalid")
+    return price
+
+
+def _spot_minted() -> float:
+    data = _get_json("https://mintedmetal.com/api/prices.json")
+    price = float(data["metals"]["gold"]["price"])
+    if price <= 0:
+        raise RuntimeError("minted price invalid")
+    return price
+
+
+def _spot_goldprice_dev() -> float:
+    data = _get_json("https://goldprice.dev/v1/prices?symbol=XAU-USD-SPOT")
+    price = float(data["price"])
+    if price <= 0:
+        raise RuntimeError("goldprice.dev invalid")
+    return price
+
+
+SPOT_FETCHERS: list[tuple[str, Callable[[], float]]] = [
+    ("gold-api.com", _spot_gold_api),
+    ("xaus.com", _spot_xaus),
+    ("goldprice.dev", _spot_goldprice_dev),
+    ("mintedmetal.com", _spot_minted),
+    ("yahoo XAUUSD=X", lambda: _yahoo_spot("XAUUSD=X")),
+    ("yahoo GC=F", lambda: _yahoo_spot("GC=F")),
+]
+
+
+def fetch_spot() -> tuple[float, str]:
+    """Try multiple public spot sources, then fall back to disk cache."""
+    errors: list[str] = []
+    for name, fn in SPOT_FETCHERS:
+        try:
+            price = fn()
+            save_spot_cache(price, name)
+            return price, name
+        except Exception as exc:
+            errors.append(f"{name}: {exc}")
+    cached = load_spot_cache()
+    if cached:
+        price, src, ts = cached
+        age_min = max(0, int((datetime.now(BEIJING) - ts).total_seconds() // 60))
+        return price, f"缓存·{src}({age_min}分钟前)"
+    brief = errors[0] if errors else "unknown"
+    if len(brief) > 100:
+        brief = brief[:100] + "…"
+    raise RuntimeError(f"所有报价源不可用 ({brief})")
+
+
+def resolve_spot(manual: float | None = None) -> tuple[float, str]:
+    """Network spot with manual MT5 override when online sources fail."""
+    if manual is not None and manual > 500:
+        save_spot_cache(manual, "MT5手动")
+        return manual, "MT5手动"
+    return fetch_spot()
 
 
 def fetch_gc_bars(interval: str = "15m", range_: str = "5d") -> tuple[list[Bar], float]:
@@ -161,7 +277,7 @@ def fetch_snapshot() -> Snapshot:
         bars = shift_bars(raw_bars, offset)
         if abs(offset) > 80:
             warning = f"现货与期货差 {offset:.1f} 美元，盒子可能略有偏差，建议对照 MT5 手动改 H/L。"
-    except Exception as exc:
+    except Exception:
         bars = []
         fut_last = None
         warning = "K线暂时连不上（不影响现货刷新）。请手动填写 ASIA_H / ASIA_L。"

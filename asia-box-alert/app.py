@@ -13,7 +13,7 @@ from pathlib import Path
 from alerts import popup_alert
 from bar_source import get_indicator_bars
 from dashboard import ENTRY_KEYS, build_dashboard
-from gold_feed import asia_high_low, fetch_spot, last_closed_m15
+from gold_feed import asia_high_low, fetch_spot, last_closed_m15, load_spot_cache, save_spot_cache
 from news_calendar import get_news_status
 from spot_history import get_history
 from strategy import Box, beijing_now, compute_adx, compute_rsi, session_status
@@ -64,7 +64,7 @@ class App:
 
         self.root = tk.Tk()
         self.root.title("亚盘盒子监测 · XAUUSD")
-        self.root.geometry("620x680")
+        self.root.geometry("620x720")
         self.root.configure(bg="#111318")
         self.root.attributes("-topmost", True)
 
@@ -82,6 +82,7 @@ class App:
         self.status_var = tk.StringVar(value="")
         self.h_var = tk.StringVar(value=str(self.cfg.get("asia_h", "")))
         self.l_var = tk.StringVar(value=str(self.cfg.get("asia_l", "")))
+        self.p_var = tk.StringVar(value=str(self.cfg.get("manual_price", "")))
         self.topmost_var = tk.BooleanVar(value=True)
 
         tk.Label(self.root, text="现货黄金", fg=muted, bg="#111318", font=font_ui).pack(pady=(12, 0))
@@ -137,6 +138,19 @@ class App:
         tk.Button(form, text="保存盒子", command=self.save_box).grid(row=0, column=4, padx=4)
         tk.Button(form, text="自动盒子", command=self.clear_box).grid(row=0, column=5, padx=2)
 
+        form2 = tk.Frame(self.root, bg="#111318")
+        form2.pack(fill="x", padx=16, pady=(4, 0))
+        tk.Label(form2, text="MT5现价", fg=muted, bg="#111318").grid(row=0, column=0, sticky="w")
+        tk.Entry(form2, textvariable=self.p_var, width=10).grid(row=0, column=1, padx=4)
+        tk.Button(form2, text="应用现价", command=self.apply_manual_price).grid(row=0, column=2, padx=4)
+        tk.Label(
+            form2,
+            text="网络断时填 MT5 报价，仍可看位置/入场",
+            fg=muted,
+            bg="#111318",
+            font=("Microsoft YaHei UI", 9),
+        ).grid(row=0, column=3, columnspan=3, sticky="w", padx=4)
+
         opts = tk.Frame(self.root, bg="#111318")
         opts.pack(fill="x", padx=16, pady=8)
         tk.Checkbutton(
@@ -175,6 +189,40 @@ class App:
         if h and l and h > l:
             return h, l
         return None, None
+
+    def _parse_manual_price(self) -> float | None:
+        raw = self.p_var.get().strip() or str(self.cfg.get("manual_price", "")).strip()
+        if not raw:
+            return None
+        try:
+            price = float(raw)
+        except ValueError:
+            return None
+        return price if price > 500 else None
+
+    def _resolve_price(self) -> tuple[float, str]:
+        manual = self._parse_manual_price()
+        try:
+            price, source = fetch_spot()
+            return price, source
+        except Exception:
+            pass
+        if manual is not None:
+            save_spot_cache(manual, "MT5手动")
+            get_history().add(manual, beijing_now())
+            return manual, "MT5手动(网络断)"
+        cached = load_spot_cache()
+        if cached:
+            price, src, ts = cached
+            age_min = max(0, int((beijing_now() - ts).total_seconds() // 60))
+            get_history().add(price, beijing_now())
+            return price, f"缓存·{src}({age_min}分钟前)"
+        last = get_history().last_tick()
+        if last:
+            ts, price = last
+            age_min = max(0, int((beijing_now() - ts).total_seconds() // 60))
+            return price, f"本地采样({age_min}分钟前)"
+        raise RuntimeError("无法获取报价：请检查网络，或在 MT5现价 填当前价后点「应用现价」")
 
     def _make_box(self, auto):
         h, l = self._parse_manual()
@@ -256,7 +304,7 @@ class App:
 
     def _poll_price(self) -> None:
         try:
-            price, source = fetch_spot()
+            price, source = self._resolve_price()
             now = beijing_now()
             get_history().add(price, now)
             self.root.after(0, lambda: self._apply_price(price, source, now))
@@ -295,10 +343,13 @@ class App:
     def _fail_price(self, err: str) -> None:
         self.price_busy = False
         self.status_var.set(f"报价失败：{err}")
+        self.tick_var.set("报价失败 — 请填 MT5现价 并点「应用现价」")
+        if err != self._bar_log:
+            self.append_log(f"报价失败：{err}")
 
     def _fail_bars(self, err: str) -> None:
         self.bar_busy = False
-        msg = f"K线刷新失败：{err}。现货仍在积累，请保持程序运行或手动填 ASIA_H/L"
+        msg = f"K线刷新异常：{err}（不影响现价；本地采样会继续积累）"
         if msg != self._bar_log:
             self._bar_log = msg
             self.append_log(msg)
@@ -330,6 +381,19 @@ class App:
         self.price_busy = False
         self.cached_price_source = source
         self._render(price, source, now)
+
+    def apply_manual_price(self) -> None:
+        price = self._parse_manual_price()
+        if price is None:
+            self.append_log("MT5现价无效，请输入如 4410.5")
+            return
+        self.cfg["manual_price"] = price
+        save_config(self.cfg)
+        save_spot_cache(price, "MT5手动")
+        now = beijing_now()
+        get_history().add(price, now)
+        self.append_log(f"已应用 MT5 现价 {price:.2f}（网络断时自动使用）")
+        self._apply_price(price, "MT5手动", now)
 
     def save_box(self) -> None:
         h, l = self._parse_manual()
@@ -375,7 +439,18 @@ class App:
 
 def print_once() -> None:
     cfg = load_config()
-    price, source = fetch_spot()
+    manual = cfg.get("manual_price")
+    try:
+        price, source = fetch_spot()
+    except Exception:
+        if manual and float(manual) > 500:
+            price, source = float(manual), "MT5手动"
+        else:
+            cached = load_spot_cache()
+            if not cached:
+                raise
+            price, src, ts = cached
+            source = f"缓存·{src}"
     now = beijing_now()
     get_history().add(price, now)
     box = None

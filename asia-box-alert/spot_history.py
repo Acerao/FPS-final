@@ -84,6 +84,9 @@ class SpotHistory:
     def tick_count(self) -> int:
         return len(self.ticks)
 
+    def last_tick(self) -> tuple[datetime, float] | None:
+        return self.ticks[-1] if self.ticks else None
+
 
 _history = SpotHistory()
 

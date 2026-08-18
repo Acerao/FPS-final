@@ -157,42 +157,59 @@ def _line_mode_signal(price: float, bars: list[object], lot: float) -> tuple[Sig
     near_up = abs(close - up_now) <= pad
     near_dn = abs(close - dn_now) <= pad or (box_low <= close <= box_high)
 
+    plan: dict | None = None
     if break_up:
+        entry = up_now
+        sl = entry - SL_USD
+        tp = entry + 18.0
         sig = Signal(
             "line_long_call",
             "LINES",
             "画线偏多：上破压力",
-            f"H8风格：已上破下降压力。建议等回踩 {up_now:.1f} 不破再多，SL 约 $15，别追第一根。",
+            f"H8风格：已上破下降压力。建议等回踩 {entry:.1f} 不破再多，SL {sl:.1f}，TP {tp:.1f}。",
             True,
         )
         bias = "偏多"
+        plan = {"side": "long", "entry": entry, "sl": sl, "tp": tp}
     elif break_down:
+        entry = dn_now
+        sl = entry + SL_USD
+        tp = entry - 18.0
         sig = Signal(
             "line_short_call",
             "LINES",
             "画线偏空：跌破支撑",
-            f"H8风格：已跌破下轨/支撑箱。建议等反抽 {dn_now:.1f} 承压再空，SL 约 $15。",
+            f"H8风格：已跌破下轨/支撑箱。建议等反抽 {entry:.1f} 承压再空，SL {sl:.1f}，TP {tp:.1f}。",
             True,
         )
         bias = "偏空"
+        plan = {"side": "short", "entry": entry, "sl": sl, "tp": tp}
     elif near_up:
+        entry = up_now
+        sl = entry + 15.0
+        tp = entry - 12.0
         sig = Signal(
             "line_wait",
             "LINES",
             "画线压力附近",
-            f"价格靠近下降压力 {up_now:.1f}，先防假突破。未收上去前不追多。",
+            f"价格靠近下降压力 {up_now:.1f}，先防假突破。若出现阴吞噬可轻仓空：SL {sl:.1f} / TP {tp:.1f}。",
             False,
         )
         bias = "压力观察"
+        plan = {"side": "short", "entry": entry, "sl": sl, "tp": tp}
     elif near_dn:
+        entry = max(dn_now, box_low)
+        sl = entry - 15.0
+        tp = entry + 12.0
         sig = Signal(
             "line_wait",
             "LINES",
             "画线支撑附近",
-            f"价格靠近支撑/需求区 {box_low:.1f}-{box_high:.1f}，等确认K再考虑反弹。",
+            f"价格靠近支撑/需求区 {box_low:.1f}-{box_high:.1f}，若阳吞噬可轻仓多：SL {sl:.1f} / TP {tp:.1f}。",
             False,
         )
         bias = "支撑观察"
+        plan = {"side": "long", "entry": entry, "sl": sl, "tp": tp}
     else:
         mid = (up_now + dn_now) / 2.0
         side = "上半区" if close >= mid else "下半区"
@@ -207,6 +224,7 @@ def _line_mode_signal(price: float, bars: list[object], lot: float) -> tuple[Sig
         "bias": bias,
         "lot": lot,
         "suggest_tp": 18.0 if break_up or break_down else 12.0,
+        "plan": plan,
     }
     return sig, overlay
 

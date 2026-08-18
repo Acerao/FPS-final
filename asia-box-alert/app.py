@@ -492,6 +492,28 @@ class App:
         box_high = ov.get("box_high")
         if box_low is not None and box_high is not None:
             self.chart.create_rectangle(left, py(box_high), right, py(box_low), outline="#d29922", fill="#d29922", stipple="gray25")
+
+        plan = ov.get("plan")
+        if isinstance(plan, dict):
+            entry = plan.get("entry")
+            sl = plan.get("sl")
+            tp = plan.get("tp")
+            side = plan.get("side", "")
+            if all(v is not None for v in (entry, sl, tp)):
+                entry_c = "#3fb950"
+                sl_c = "#f85149"
+                tp_c = "#f2cc60"
+                y_e = py(float(entry))
+                y_sl = py(float(sl))
+                y_tp = py(float(tp))
+                self.chart.create_line(left, y_e, right, y_e, fill=entry_c, width=2, dash=(5, 3))
+                self.chart.create_line(left, y_sl, right, y_sl, fill=sl_c, width=2, dash=(4, 2))
+                self.chart.create_line(left, y_tp, right, y_tp, fill=tp_c, width=2, dash=(4, 2))
+                self.chart.create_text(right - 6, y_e - 2, anchor="se", fill=entry_c, text=f"Entry {entry:.1f}", font=("Consolas", 9, "bold"))
+                self.chart.create_text(right - 6, y_sl - 2, anchor="se", fill=sl_c, text=f"SL {sl:.1f}", font=("Consolas", 9))
+                self.chart.create_text(right - 6, y_tp - 2, anchor="se", fill=tp_c, text=f"TP {tp:.1f}", font=("Consolas", 9))
+                if side in {"long", "short"}:
+                    self.chart.create_text(left + 8, y_e - 2, anchor="sw", fill=entry_c, text=side.upper(), font=("Consolas", 9, "bold"))
         self.chart.create_text(left + 6, top + 8, anchor="w", fill="#c9d1d9", text=f"{max_p:.1f}", font=("Consolas", 9))
         self.chart.create_text(left + 6, bottom - 8, anchor="w", fill="#c9d1d9", text=f"{min_p:.1f}", font=("Consolas", 9))
         bias = ov.get("bias", "等待")

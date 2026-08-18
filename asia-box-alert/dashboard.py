@@ -37,6 +37,9 @@ from strategy import (
 )
 from gold_feed import aggregate_bars
 
+# 画线最低 K 根数：2 点连线只需近期少量K，不必硬等 20 根
+MIN_LINE_BARS = 8
+
 
 def _profile_for(strategy: str) -> str:
     if strategy == "asia_box_hwr":
@@ -355,17 +358,29 @@ def build_dashboard(
     elif strategy == "asia_box_lines":
         line_close = m15_close
         line_bars = m15_bars[-120:] if m15_bars else []
-        if len(line_bars) < 20:
-            signal = Signal("line_wait", "LINES", "画线数据不足", "K线不足，至少需要约 20 根再画线。", False)
+        if len(line_bars) < MIN_LINE_BARS:
+            signal = Signal(
+                "line_wait",
+                "LINES",
+                "画线数据不足",
+                f"近期K线仅 {len(line_bars)} 根，至少 {MIN_LINE_BARS} 根即可用近期画线。",
+                False,
+            )
             line_overlay = None
         else:
             signal, line_overlay = _line_mode_signal(price, line_bars, clamp_lot(lot))
     elif strategy == "asia_box_lines_h1":
-        # 用 H1 聚合后的K线来做“大熊式画线单”的尺度（更符合“小时级画线”的习惯）
+        # 用近期 H1（由现有 M15 聚合）画线，不必硬等 20 根
         raw = m15_bars[-240:] if m15_bars else []
         line_bars = aggregate_bars(raw, 60)
-        if len(line_bars) < 20:
-            signal = Signal("line_wait", "LINES", "画线数据不足", "H1 K线不足，至少需要约 20 根再画线。", False)
+        if len(line_bars) < MIN_LINE_BARS:
+            signal = Signal(
+                "line_wait",
+                "LINES",
+                "画线数据不足",
+                f"近期 H1 仅 {len(line_bars)} 根，至少 {MIN_LINE_BARS} 根即可用近期画线（不必等 20 根）。",
+                False,
+            )
             line_overlay = None
         else:
             line_close = float(getattr(line_bars[-1], "close", None))
@@ -376,8 +391,14 @@ def build_dashboard(
 
         # 1) 画线（用 asia_box_lines 的尺度：直接用当前缓存 K 线）
         line_bars = m15_bars[-120:] if m15_bars else []
-        if len(line_bars) < 20:
-            line_sig = Signal("line_wait", "LINES", "画线数据不足", "K线不足，至少需要约 20 根再画线。", False)
+        if len(line_bars) < MIN_LINE_BARS:
+            line_sig = Signal(
+                "line_wait",
+                "LINES",
+                "画线数据不足",
+                f"近期K线仅 {len(line_bars)} 根，至少 {MIN_LINE_BARS} 根即可用近期画线。",
+                False,
+            )
             line_overlay = None
         else:
             line_sig, line_overlay = _line_mode_signal(price, line_bars, used_lot)

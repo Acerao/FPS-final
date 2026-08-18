@@ -237,7 +237,7 @@ def run_selftest(popup: bool = False) -> int:
 
         dummy_start = datetime(2026, 8, 17, 10, 0, tzinfo=BEIJING)
         m15_bars = []
-        for i in range(160):  # 160 M15 ≈ 40 H1，足够触发“至少约20根”
+        for i in range(48):  # 48 M15 ≈ 12 H1，验证“用近期、不必等20根”
             ts = dummy_start + timedelta(minutes=i * 15)
             base = 4415 - i * 0.08  # 让数据整体略偏下降，利于构建“下降通道”形态（不要求必须）
             m15_bars.append(Bar(ts=ts, open=base, high=base + 1.0, low=base - 1.0, close=base + 0.2))

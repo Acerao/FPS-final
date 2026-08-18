@@ -13,7 +13,7 @@ from pathlib import Path
 
 from alerts import popup_alert
 from bar_source import get_indicator_bars
-from dashboard import ENTRY_KEYS, build_dashboard
+from dashboard import ENTRY_KEYS, MIN_LINE_BARS, build_dashboard
 from gold_feed import asia_high_low, fetch_spot, last_closed_m15, load_spot_cache, save_spot_cache, aggregate_bars
 from news_calendar import get_news_status
 from scale_grid import GRID_MAX_LAYERS, GridState
@@ -865,8 +865,14 @@ class App:
         else:
             bars = base_m15
 
-        if len(bars) < 20:
-            self.chart.create_text(330, 115, fill="#9aa3b2", text="K线不足，等待更多数据后画线", font=("Microsoft YaHei UI", 10))
+        if len(bars) < MIN_LINE_BARS:
+            self.chart.create_text(
+                330,
+                115,
+                fill="#9aa3b2",
+                text=f"近期K线仅 {len(bars)} 根，满 {MIN_LINE_BARS} 根即可画线",
+                font=("Microsoft YaHei UI", 10),
+            )
             return
         w = max(100, self.chart.winfo_width())
         h = max(100, self.chart.winfo_height())

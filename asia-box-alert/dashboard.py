@@ -50,7 +50,7 @@ def _strategy_label(strategy: str) -> str:
         "asia_box": "亚盘盒子",
         "asia_box_hwr": "亚盘盒子·高胜率",
         "asia_box_sprint": "亚盘盒子·冲刺$1k",
-        "asia_box_lines": "画线策略·H8风格",
+        "asia_box_lines": "画线策略·大熊式",
         "scale_grid": "等距网格",
     }.get(strategy, strategy)
 
@@ -91,164 +91,169 @@ class Dashboard:
     line_overlay: dict | None = None
 
 
-def _swing_points(bars: list[object], kind: str) -> list[tuple[int, float]]:
-    vals: list[tuple[int, float]] = []
-    if len(bars) < 5:
-        return vals
-    for i in range(2, len(bars) - 2):
-        cur = bars[i]
-        prev = bars[i - 1]
-        nxt = bars[i + 1]
-        c = float(getattr(cur, kind))
-        p = float(getattr(prev, kind))
-        n = float(getattr(nxt, kind))
+# ---------- 大熊式画线辅助函数 ----------
+
+def _major_swings(bars: list[object], kind: str, lookback: int = 80) -> list[tuple[int, float]]:
+    """找最近几个明显的摆动高/低点（大熊手画风格：只取最显眼的2-4个）。"""
+    n = len(bars)
+    pts: list[tuple[int, float]] = []
+    for i in range(max(2, n - lookback), n - 2):
+        val = float(getattr(bars[i], kind))
+        l2 = [float(getattr(bars[j], kind)) for j in range(max(0, i - 2), i)]
+        r2 = [float(getattr(bars[j], kind)) for j in range(i + 1, min(n, i + 3))]
+        if not l2 or not r2:
+            continue
         if kind == "high":
-            if c >= p and c >= n:
-                vals.append((i, c))
+            if val >= max(l2) and val >= max(r2) and (val >= bars[i - 1].high + 0.5 or val >= bars[i + 1].high + 0.5):
+                pts.append((i, val))
         else:
-            if c <= p and c <= n:
-                vals.append((i, c))
-    return vals
+            if val <= min(l2) and val <= min(r2) and (val <= bars[i - 1].low - 0.5 or val <= bars[i + 1].low - 0.5):
+                pts.append((i, val))
+    merged: list[tuple[int, float]] = []
+    for p in pts:
+        if merged and abs(p[0] - merged[-1][0]) <= 5:
+            if (kind == "high" and p[1] > merged[-1][1]) or (kind == "low" and p[1] < merged[-1][1]):
+                merged[-1] = p
+        else:
+            merged.append(p)
+    return merged[-4:]
 
 
-def _fit_line(points: list[tuple[int, float]]) -> tuple[float, float] | None:
-    if len(points) < 2:
-        return None
-    n = float(len(points))
-    sx = sum(p[0] for p in points)
-    sy = sum(p[1] for p in points)
-    sxx = sum(p[0] * p[0] for p in points)
-    sxy = sum(p[0] * p[1] for p in points)
-    den = n * sxx - sx * sx
-    if abs(den) < 1e-9:
-        return None
-    a = (n * sxy - sx * sy) / den
-    b = (sy - a * sx) / n
-    return a, b
+def _two_pt_line(p1: tuple[int, float], p2: tuple[int, float]) -> tuple[float, float]:
+    x1, y1 = p1; x2, y2 = p2
+    a = (y2 - y1) / (x2 - x1) if x2 != x1 else 0.0
+    return a, y1 - a * x1
 
 
 def _line_y(line: tuple[float, float] | None, x: int, fallback: float) -> float:
     if not line:
         return fallback
-    a, b = line
-    return a * x + b
+    return line[0] * x + line[1]
+
+
+def _fit_line(points: list[tuple[int, float]]) -> tuple[float, float] | None:
+    """过首尾两点的直线（供图表渲染用）。"""
+    if len(points) < 2:
+        return None
+    return _two_pt_line(points[0], points[-1])
+
+
+# 等回踩状态（进程内持久，跨调用）
+_pullback_state: dict = {}
+_pullback_clock = [0]
 
 
 def _line_mode_signal(price: float, bars: list[object], lot: float) -> tuple[Signal, dict]:
+    """
+    大熊式信号（修正正确版）：
+    1. 只连最近2个明显高/低点构建下降通道（手画线风格）
+    2. 收盘突破压力线（不是影线）→ 进入等回踩状态
+    3. 价格回到旧压力线附近±$3 → 触发入场提醒（限价或市价）
+    4. 超过20根不回踩 → 放弃
+    """
     n = len(bars)
     last_x = n - 1
     close = float(getattr(bars[-1], "close"))
     prev_close = float(getattr(bars[-2], "close")) if n >= 2 else close
-    highs = _swing_points(bars, "high")
-    lows = _swing_points(bars, "low")
-    up_fit = _fit_line(highs[-6:])
-    dn_fit = _fit_line(lows[-6:])
-    up_now = _line_y(up_fit, last_x, max(float(getattr(b, "high")) for b in bars[-20:]))
-    dn_now = _line_y(dn_fit, last_x, min(float(getattr(b, "low")) for b in bars[-20:]))
-    up_prev = _line_y(up_fit, max(0, last_x - 1), up_now)
-    dn_prev = _line_y(dn_fit, max(0, last_x - 1), dn_now)
+
+    hi_pts = _major_swings(bars, "high")
+    lo_pts = _major_swings(bars, "low")
+
+    up_line = _two_pt_line(hi_pts[-2], hi_pts[-1]) if len(hi_pts) >= 2 else None
+    dn_line = _two_pt_line(lo_pts[-2], lo_pts[-1]) if len(lo_pts) >= 2 else None
+
+    up_now = _line_y(up_line, last_x, max(float(getattr(b, "high")) for b in bars[-20:]))
+    dn_now = _line_y(dn_line, last_x, min(float(getattr(b, "low")) for b in bars[-20:]))
+    up_prev = _line_y(up_line, last_x - 1, up_now)
+    dn_prev = _line_y(dn_line, last_x - 1, dn_now)
 
     box_low = min(float(getattr(b, "low")) for b in bars[-24:])
     box_high = box_low + (max(float(getattr(b, "high")) for b in bars[-24:]) - box_low) * 0.35
 
-    pad = max(1.0, (up_now - dn_now) * 0.08 if up_now > dn_now else 1.0)
-    break_up = close > up_now + pad and prev_close <= up_prev + pad
-    break_down = close < dn_now - pad and prev_close >= dn_prev - pad
-    near_up = abs(close - up_now) <= pad
-    near_dn = abs(close - dn_now) <= pad or (box_low <= close <= box_high)
+    # 只在下降通道时工作（高点在降）
+    descending = len(hi_pts) >= 2 and hi_pts[-1][1] < hi_pts[-2][1]
+    broke_up = descending and close > up_now and prev_close <= up_prev
+    broke_dn = descending and close < dn_now and prev_close >= dn_prev
+
+    # 更新等回踩状态
+    _pullback_clock[0] += 1
+    pb = _pullback_state
+    if broke_up:
+        pb.update({"side": "long", "entry": up_now, "sl": up_now - SL_USD, "tp": up_now + 18.0, "since": _pullback_clock[0]})
+    elif broke_dn:
+        pb.update({"side": "short", "entry": dn_now, "sl": dn_now + SL_USD, "tp": dn_now - 18.0, "since": _pullback_clock[0]})
+    if pb.get("since") and _pullback_clock[0] - pb["since"] > 20:
+        pb.clear()
 
     plan: dict | None = None
-    tol_now = 1.5  # 允许“现在下市价”的最大偏离（美元）
-    if break_up:
-        entry = up_now
-        sl = entry - SL_USD
-        tp = entry + 18.0
+    tol_pullback = 3.0
+    tol_market = 1.5
+
+    if pb.get("side"):
+        entry = pb["entry"]; sl = pb["sl"]; tp = pb["tp"]; pb_side = pb["side"]
         diff = abs(close - entry)
-        now_txt = f"当前价 {close:.1f} 与 Entry {entry:.1f} 差 ${diff:.1f}"
-        market_ok = diff <= tol_now
-        sig = Signal(
-            "line_long_call",
-            "LINES",
-            "画线偏多：上破压力",
-            (
-                f"H8风格：已上破下降压力。\n{now_txt}\n"
-                + (
-                    f"满足条件可直接市价做多（不等回踩）。SL {sl:.1f}，TP {tp:.1f}。"
-                    if market_ok
-                    else f"建议挂 Entry 限价回踩：{entry:.1f}，不破再多。SL {sl:.1f}，TP {tp:.1f}。"
-                )
-            ),
-            True,
-        )
-        bias = "偏多"
-        plan = {"side": "long", "entry": entry, "sl": sl, "tp": tp}
-    elif break_down:
-        entry = dn_now
-        sl = entry + SL_USD
-        tp = entry - 18.0
-        diff = abs(close - entry)
-        now_txt = f"当前价 {close:.1f} 与 Entry {entry:.1f} 差 ${diff:.1f}"
-        market_ok = diff <= tol_now
-        sig = Signal(
-            "line_short_call",
-            "LINES",
-            "画线偏空：跌破支撑",
-            (
-                f"H8风格：已跌破下轨/支撑箱。\n{now_txt}\n"
-                + (
-                    f"满足条件可直接市价做空（不等反抽）。SL {sl:.1f}，TP {tp:.1f}。"
-                    if market_ok
-                    else f"建议挂 Entry 限价反抽承压：{entry:.1f}。SL {sl:.1f}，TP {tp:.1f}。"
-                )
-            ),
-            True,
-        )
-        bias = "偏空"
-        plan = {"side": "short", "entry": entry, "sl": sl, "tp": tp}
-    elif near_up:
-        entry = up_now
-        sl = entry + 15.0
-        tp = entry - 12.0
-        sig = Signal(
-            "line_wait",
-            "LINES",
-            "画线压力附近",
-            f"价格靠近下降压力 {up_now:.1f}，先防假突破。若出现阴吞噬可轻仓空：SL {sl:.1f} / TP {tp:.1f}。\n（如要市价：等你确认后再自己判断，不由软件强制）",
-            False,
-        )
-        bias = "压力观察"
-        plan = {"side": "short", "entry": entry, "sl": sl, "tp": tp}
-    elif near_dn:
-        entry = max(dn_now, box_low)
-        sl = entry - 15.0
-        tp = entry + 12.0
-        sig = Signal(
-            "line_wait",
-            "LINES",
-            "画线支撑附近",
-            f"价格靠近支撑/需求区 {box_low:.1f}-{box_high:.1f}，若出现阳吞噬可轻仓多：SL {sl:.1f} / TP {tp:.1f}。\n（如要市价：等你确认后再自己判断，不由软件强制）",
-            False,
-        )
-        bias = "支撑观察"
-        plan = {"side": "long", "entry": entry, "sl": sl, "tp": tp}
+        wait_bars = _pullback_clock[0] - pb["since"]
+        if diff <= tol_pullback:
+            market_ok = diff <= tol_market
+            if pb_side == "long":
+                msg = (f"压力变支撑，价格回踩到 {entry:.1f}，差 ${diff:.1f}\n"
+                       + (f"可直接市价做多。SL {sl:.1f}，TP {tp:.1f}，手数 {lot:.2f}。"
+                          if market_ok else f"挂 Buy Limit {entry:.1f}，SL {sl:.1f}，TP {tp:.1f}，手数 {lot:.2f}。"))
+                sig = Signal("line_long_call", "LINES", "画线做多：回踩到位", msg, True)
+                bias = "偏多·回踩触发"
+            else:
+                msg = (f"支撑变压力，价格反抽到 {entry:.1f}，差 ${diff:.1f}\n"
+                       + (f"可直接市价做空。SL {sl:.1f}，TP {tp:.1f}，手数 {lot:.2f}。"
+                          if market_ok else f"挂 Sell Limit {entry:.1f}，SL {sl:.1f}，TP {tp:.1f}，手数 {lot:.2f}。"))
+                sig = Signal("line_short_call", "LINES", "画线做空：反抽到位", msg, True)
+                bias = "偏空·反抽触发"
+            plan = {"side": pb_side, "entry": entry, "sl": sl, "tp": tp}
+        else:
+            direction = "多（等回踩压力线）" if pb_side == "long" else "空（等反抽支撑线）"
+            sig = Signal("line_wait", "LINES", f"已破线，等{direction[:5]} {entry:.1f}",
+                         f"破线后等{direction}。Entry {entry:.1f}，当前差 ${diff:.1f}，已等 {wait_bars} 根。", False)
+            bias = "等回踩" if pb_side == "long" else "等反抽"
+            plan = {"side": pb_side, "entry": entry, "sl": sl, "tp": tp}
+    elif descending:
+        near_up = abs(close - up_now) <= 4.0
+        near_dn = abs(close - dn_now) <= 4.0 or (box_low <= close <= box_high)
+        if near_up:
+            entry = up_now; sl = entry + SL_USD; tp = entry - 12.0
+            sig = Signal("line_wait", "LINES", "靠近下降压力，勿追多",
+                         f"压力线 {up_now:.1f}。未收盘突破前不做多，等收盘站上再等回踩。", False)
+            bias = "压力观察"
+            plan = {"side": "short", "entry": entry, "sl": sl, "tp": tp}
+        elif near_dn:
+            entry = dn_now; sl = entry - SL_USD; tp = entry + 12.0
+            sig = Signal("line_wait", "LINES", "靠近下降支撑，观察",
+                         f"支撑 {dn_now:.1f} / 需求区 {box_low:.1f}–{box_high:.1f}，等确认K再轻仓多。", False)
+            bias = "支撑观察"
+            plan = {"side": "long", "entry": entry, "sl": sl, "tp": tp}
+        else:
+            mid = (up_now + dn_now) / 2.0
+            zone = "上半区" if close >= mid else "下半区"
+            sig = Signal("line_wait", "LINES", f"下降通道{zone}，等靠线",
+                         f"压力 {up_now:.1f}  支撑 {dn_now:.1f}  当前 {close:.1f}。通道未破，不追。", False)
+            bias = "震荡等待"
     else:
-        mid = (up_now + dn_now) / 2.0
-        side = "上半区" if close >= mid else "下半区"
-        sig = Signal("line_wait", "LINES", "通道内等待", f"当前在通道{side}，先等靠线再决策。", False)
-        bias = "震荡等待"
+        sig = Signal("line_wait", "LINES", "通道不明确，观察",
+                     f"K线不足或非下降通道，暂不画线。当前价 {close:.1f}。", False)
+        bias = "观察"
 
     overlay = {
-        "upper_fit": up_fit,
-        "lower_fit": dn_fit,
+        "upper_fit": up_line,
+        "lower_fit": dn_line,
         "box_low": box_low,
         "box_high": box_high,
         "bias": bias,
         "lot": lot,
-        "suggest_tp": 18.0 if break_up or break_down else 12.0,
+        "suggest_tp": 18.0,
         "plan": plan,
     }
     return sig, overlay
 
+
+# ---------- 其余保持不变 ----------
 
 def _regime(box: Box | None, adx: AdxState | None, price: float, m15_close: float | None) -> tuple[str, str]:
     if box is None:
@@ -377,7 +382,7 @@ def build_dashboard(
         sl_risk = risk_dollars(used_lot, SL_USD)
         indicators_text = (
             f"策略 {_strategy_label(strategy)}  |  时段 {session}  |  位置 {zone}\n"
-            f"手数 {used_lot}  单笔止损约 ${sl_risk:.0f}  |  核心：压力/支撑/破位回踩\n"
+            f"手数 {used_lot}  单笔止损约 ${sl_risk:.0f}  |  原理：2点连线+破位收盘+等回踩\n"
             f"{kline_line}\n"
             f"ADX {adx_txt}  |  RSI(M15) {rsi_txt}  |  M15收盘 {m15_txt}\n"
             f"建议 {'✓ 可提醒' if entry_ok else '✗ 等待'}"

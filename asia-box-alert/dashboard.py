@@ -158,24 +158,29 @@ def _line_sl_tp_from_levels(
     box_high: float,
     hi_pts: list[tuple[int, float]],
     lo_pts: list[tuple[int, float]],
-) -> tuple[float, float, str]:
+) -> tuple[float, float, str] | None:
     """
-    用“突破位/压力支撑位”给大熊画线单定 SL/TP，而不是固定美元。
-    返回: (sl, tp, reason)
+    用“突破位/压力支撑位”给大熊画线单定 SL/TP。
+    空间不够（第一目标太近）则返回 None，表示这单不像大熊该做的。
     """
     channel_w = max(abs(up_now - dn_now), 6.0)
-    pad = 0.6  # 结构位下上方缓冲，避免贴太死
+    pad = 0.6
+    min_room = 6.0
 
     if side == "long":
         support_candidates = [dn_now, box_low] + [p for _, p in lo_pts[-4:] if p < entry]
         support = min(support_candidates) if support_candidates else entry - channel_w * 0.5
         sl = min(entry - 3.0, support - pad)
 
-        resist_above = [p for _, p in hi_pts[-6:] if p > entry]
-        resist_zone = min(resist_above) if resist_above else max(up_now, box_high, entry + channel_w)
-        tp_struct = resist_zone - pad
-        tp_by_rr = entry + max((entry - sl) * 1.2, 6.0)
-        tp = max(tp_struct, tp_by_rr)
+        resist_above = [p for _, p in hi_pts[-6:] if p > entry + min_room]
+        if resist_above:
+            resist_zone = min(resist_above)
+            tp = resist_zone - pad
+        else:
+            tp = entry + max((entry - sl) * 1.2, min_room)
+            resist_zone = tp
+        if tp - entry < min_room:
+            return None
         reason = f"SL参考支撑 {support:.1f} 下方；TP参考压力 {resist_zone:.1f}"
         return sl, tp, reason
 
@@ -183,11 +188,20 @@ def _line_sl_tp_from_levels(
     resistance = max(resist_candidates) if resist_candidates else entry + channel_w * 0.5
     sl = max(entry + 3.0, resistance + pad)
 
-    support_below = [p for _, p in lo_pts[-6:] if p < entry]
-    support_zone = max(support_below) if support_below else min(dn_now, box_low, entry - channel_w)
-    tp_struct = support_zone + pad
-    tp_by_rr = entry - max((sl - entry) * 1.2, 6.0)
-    tp = min(tp_struct, tp_by_rr)
+    # 第一目标取“下方最近、但仍有足够空间”的支撑，而不是直接打更远的 RR 目标
+    support_below = [p for _, p in lo_pts[-6:] if p < entry - min_room]
+    if box_low < entry - min_room:
+        support_below.append(box_low)
+    if dn_now < entry - min_room:
+        support_below.append(dn_now)
+    if support_below:
+        support_zone = max(support_below)
+        tp = support_zone + pad
+    else:
+        tp = entry - max((sl - entry) * 1.0, min_room)
+        support_zone = tp
+    if entry - tp < min_room:
+        return None
     reason = f"SL参考压力 {resistance:.1f} 上方；TP参考支撑 {support_zone:.1f}"
     return sl, tp, reason
 
@@ -240,11 +254,15 @@ def _line_mode_signal(price: float, bars: list[object], lot: float) -> tuple[Sig
     _pullback_clock[0] += 1
     pb = _pullback_state
     if broke_up:
-        sl, tp, reason = _line_sl_tp_from_levels("long", up_now, up_now, dn_now, box_low, box_high, hi_pts, lo_pts)
-        pb.update({"side": "long", "entry": up_now, "sl": sl, "tp": tp, "reason": reason, "since": _pullback_clock[0]})
+        calc = _line_sl_tp_from_levels("long", up_now, up_now, dn_now, box_low, box_high, hi_pts, lo_pts)
+        if calc:
+            sl, tp, reason = calc
+            pb.update({"side": "long", "entry": up_now, "sl": sl, "tp": tp, "reason": reason, "since": _pullback_clock[0]})
     elif broke_dn:
-        sl, tp, reason = _line_sl_tp_from_levels("short", dn_now, up_now, dn_now, box_low, box_high, hi_pts, lo_pts)
-        pb.update({"side": "short", "entry": dn_now, "sl": sl, "tp": tp, "reason": reason, "since": _pullback_clock[0]})
+        calc = _line_sl_tp_from_levels("short", dn_now, up_now, dn_now, box_low, box_high, hi_pts, lo_pts)
+        if calc:
+            sl, tp, reason = calc
+            pb.update({"side": "short", "entry": dn_now, "sl": sl, "tp": tp, "reason": reason, "since": _pullback_clock[0]})
     if pb.get("since") and _pullback_clock[0] - pb["since"] > 20:
         pb.clear()
 
@@ -254,30 +272,50 @@ def _line_mode_signal(price: float, bars: list[object], lot: float) -> tuple[Sig
 
     if pb.get("side"):
         entry = pb["entry"]; sl = pb["sl"]; tp = pb["tp"]; pb_side = pb["side"]; reason = pb.get("reason", "")
-        diff = abs(close - entry)
         wait_bars = _pullback_clock[0] - pb["since"]
-        if diff <= tol_pullback:
-            market_ok = diff <= tol_market
+        # 大熊：必须等价格从破位一侧回到旧线上，不能把“还在破位延伸”当成反抽/回踩
+        if pb_side == "long":
+            retest = (entry - tol_pullback) <= close <= (entry + 1.0)
+        else:
+            retest = (entry - 1.0) <= close <= (entry + tol_pullback)
+        if retest:
             if pb_side == "long":
-                msg = (f"压力变支撑，价格回踩到 {entry:.1f}，差 ${diff:.1f}\n"
+                diff = entry - close
+                market_ok = abs(close - entry) <= tol_market and close <= entry + 0.8
+                msg = (f"压力变支撑，价格回踩到 {entry:.1f}，现价 {close:.1f}，差 ${abs(close - entry):.1f}\n"
                        + (f"可直接市价做多。SL {sl:.1f}，TP {tp:.1f}，手数 {lot:.2f}。"
-                          if market_ok else f"挂 Buy Limit {entry:.1f}，SL {sl:.1f}，TP {tp:.1f}，手数 {lot:.2f}。")
+                          if market_ok else f"挂 Buy Limit {entry:.1f}，SL {sl:.1f}，TP {tp:.1f}，手数 {lot:.2f}。还没回到线上不要追。")
                        + (f"\n{reason}" if reason else ""))
                 sig = Signal("line_long_call", "LINES", "画线做多：回踩到位", msg, True)
                 bias = "偏多·回踩触发"
             else:
-                msg = (f"支撑变压力，价格反抽到 {entry:.1f}，差 ${diff:.1f}\n"
+                market_ok = abs(close - entry) <= tol_market and close >= entry - 0.8
+                msg = (f"支撑变压力，价格反抽到 {entry:.1f}，现价 {close:.1f}，差 ${abs(close - entry):.1f}\n"
                        + (f"可直接市价做空。SL {sl:.1f}，TP {tp:.1f}，手数 {lot:.2f}。"
-                          if market_ok else f"挂 Sell Limit {entry:.1f}，SL {sl:.1f}，TP {tp:.1f}，手数 {lot:.2f}。")
+                          if market_ok else f"挂 Sell Limit {entry:.1f}，SL {sl:.1f}，TP {tp:.1f}，手数 {lot:.2f}。还没反抽到线上不要追空。")
                        + (f"\n{reason}" if reason else ""))
                 sig = Signal("line_short_call", "LINES", "画线做空：反抽到位", msg, True)
                 bias = "偏空·反抽触发"
             plan = {"side": pb_side, "entry": entry, "sl": sl, "tp": tp}
         else:
-            direction = "多（等回踩压力线）" if pb_side == "long" else "空（等反抽支撑线）"
-            sig = Signal("line_wait", "LINES", f"已破线，等{direction[:5]} {entry:.1f}",
-                         f"破线后等{direction}。Entry {entry:.1f}，当前差 ${diff:.1f}，已等 {wait_bars} 根。", False)
-            bias = "等回踩" if pb_side == "long" else "等反抽"
+            if pb_side == "long":
+                sig = Signal(
+                    "line_wait",
+                    "LINES",
+                    f"已破线，等回踩 {entry:.1f}",
+                    f"现价 {close:.1f}。破压力后要等回踩到 {entry:.1f} 再做多，现在不是回踩到位。已等 {wait_bars} 根。",
+                    False,
+                )
+                bias = "等回踩"
+            else:
+                sig = Signal(
+                    "line_wait",
+                    "LINES",
+                    f"已破线，等反抽 {entry:.1f}",
+                    f"现价 {close:.1f}。破支撑后要等反抽到 {entry:.1f} 再做空，现在还在线下不等于反抽到位。已等 {wait_bars} 根。",
+                    False,
+                )
+                bias = "等反抽"
             plan = {"side": pb_side, "entry": entry, "sl": sl, "tp": tp}
     elif descending:
         near_up = abs(close - up_now) <= 4.0

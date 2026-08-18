@@ -98,6 +98,26 @@ def run_selftest(popup: bool = False) -> int:
         print(f"[FAIL] 冲刺 B 期望带手数金额，得到 {sig.key} {sig.message}")
         fail += 1
 
+    print("\n=== 画线反抽判定自测 ===")
+    from dashboard import _line_mode_signal, _pullback_state, _pullback_clock
+
+    _pullback_state.clear()
+    _pullback_state.update(
+        {"side": "short", "entry": 4391.2, "sl": 4404.0, "tp": 4375.9, "reason": "test", "since": 0}
+    )
+    _pullback_clock[0] = 1
+    fake_bars = []
+    for i in range(30):
+        fake_bars.append(_Bar(4400 - i * 0.3, 4401 - i * 0.3, 4399 - i * 0.3, 4388.93 if i == 29 else 4400 - i * 0.3))
+    sig, _ov = _line_mode_signal(4388.93, fake_bars, 0.02)
+    if sig.key == "line_wait" and "反抽" in (sig.title + sig.message):
+        print("[OK] 现价还在旧支撑下方时，不把跌破当成反抽到位")
+        ok += 1
+    else:
+        print(f"[FAIL] 期望等反抽，得到 {sig.key} {sig.title} {sig.message}")
+        fail += 1
+    _pullback_state.clear()
+
     print("\n=== 大数据禁做自测 ===")
     fake_news = NewsStatus(
         in_blackout=True,

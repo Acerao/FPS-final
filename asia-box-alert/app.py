@@ -10,6 +10,7 @@ import threading
 import time
 from pathlib import Path
 
+from alerts import popup_alert
 from dashboard import ENTRY_KEYS, build_dashboard
 from gold_feed import asia_high_low, fetch_snapshot, fetch_spot, last_closed_m15
 from news_calendar import get_news_status
@@ -34,30 +35,6 @@ def load_config() -> dict:
 
 def save_config(cfg: dict) -> None:
     CONFIG_PATH.write_text(json.dumps(cfg, ensure_ascii=False, indent=2), encoding="utf-8")
-
-
-def popup_alert(title: str, message: str) -> None:
-    try:
-        from winotify import Notification
-
-        toast = Notification(app_id="Asia Box", title=title, msg=message, duration="long")
-        toast.set_audio("ms-winsoundevent:Notification.Looping.Alarm2", loop=False)
-        toast.show()
-        return
-    except Exception:
-        pass
-    try:
-        import winsound
-
-        winsound.MessageBeep(winsound.MB_ICONEXCLAMATION)
-    except Exception:
-        pass
-    try:
-        from tkinter import messagebox
-
-        messagebox.showinfo(title, message)
-    except Exception:
-        print(f"[ALERT] {title}: {message}")
 
 
 class App:
@@ -250,7 +227,7 @@ class App:
                 self.last_alert_key = sig.key
                 self.last_alert_at = now_ts
                 self.append_log(f"【提醒】{sig.title} | {sig.message}")
-                popup_alert(sig.title, sig.message)
+                popup_alert(sig.title, sig.message, parent=self.root)
 
     def refresh_price(self) -> None:
         if not self.price_busy:
@@ -356,8 +333,12 @@ class App:
         self.append_log("改回自动盒子")
 
     def test_alert(self) -> None:
-        popup_alert("亚盘盒子测试", "提醒通道正常。推荐入场时会弹出同样窗口。")
-        self.append_log("已发送测试提醒")
+        popup_alert(
+            "亚盘盒子测试",
+            "如果你能看到这个对话框，说明提醒正常。\n推荐入场时会同样弹窗。",
+            parent=self.root,
+        )
+        self.append_log("已发送测试提醒（应弹出对话框）")
 
     def run_selftest(self) -> None:
         from selftest import run_selftest

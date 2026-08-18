@@ -64,9 +64,9 @@ def run_selftest(popup: bool = False) -> int:
         print(f"  会弹提醒: {key}")
 
     if popup:
-        from app import popup_alert
+        from alerts import popup_alert
 
-        popup_alert("自测提醒", "如果你看到这条，弹窗通道正常。")
+        popup_alert("自测提醒", "自测弹窗：如果你看到这条，说明提醒通道正常。", parent=None)
         print("[OK] 已发送测试弹窗")
         ok += 1
 

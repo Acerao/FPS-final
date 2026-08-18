@@ -4,8 +4,12 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 from datetime import datetime, time
+from typing import TYPE_CHECKING
 
 from tzutil import BEIJING
+
+if TYPE_CHECKING:
+    from news_calendar import NewsStatus
 ASIA_START = time(8, 0)
 ASIA_END = time(14, 30)
 ENTRY_END = time(1, 0)  # next calendar day 01:00
@@ -124,12 +128,43 @@ def compute_adx(highs: list[float], lows: list[float], closes: list[float], peri
     return AdxState(adx=adx, plus_di=plus_di, minus_di=minus_di)
 
 
+def compute_rsi(closes: list[float], period: int = 14) -> float | None:
+    if len(closes) < period + 1:
+        return None
+    gains: list[float] = []
+    losses: list[float] = []
+    for i in range(1, len(closes)):
+        d = closes[i] - closes[i - 1]
+        gains.append(max(d, 0.0))
+        losses.append(max(-d, 0.0))
+    avg_gain = sum(gains[:period]) / period
+    avg_loss = sum(losses[:period]) / period
+    for i in range(period, len(gains)):
+        avg_gain = (avg_gain * (period - 1) + gains[i]) / period
+        avg_loss = (avg_loss * (period - 1) + losses[i]) / period
+    if avg_loss <= 0:
+        return 100.0
+    rs = avg_gain / avg_loss
+    return 100 - 100 / (1 + rs)
+
+
+def price_zone(price: float, box: Box | None) -> str:
+    if box is None:
+        return "无盒子"
+    if price >= box.upper_start:
+        return "上沿区"
+    if price <= box.lower_end:
+        return "下沿区"
+    return "中间禁区"
+
+
 def evaluate(
     price: float,
     box: Box | None,
     adx: AdxState | None,
     last_m15_close: float | None,
     now: datetime | None = None,
+    news: "NewsStatus | None" = None,
 ) -> Signal:
     status = session_status(now)
     if status == "SLEEP":
@@ -138,6 +173,15 @@ def evaluate(
         return Signal("flat", "FLAT", "停止开新仓", "01:00 后只平仓，01:45 必须全平。", True)
     if box is None or status == "WAIT_BOX":
         return Signal("wait_box", "WAIT", "等待锁盒", "北京 14:30 前只记录亚盘高低，不按 A/B 进场。", False)
+
+    if news is not None and news.in_blackout:
+        return Signal(
+            "news_blackout",
+            "NEWS",
+            "大数据时段，勿开仓",
+            news.detail,
+            True,
+        )
 
     adx_val = adx.adx if adx is not None else None
     pdi = adx.plus_di if adx is not None else None

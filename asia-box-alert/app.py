@@ -8,16 +8,18 @@ import json
 import sys
 import threading
 import time
-from datetime import datetime
 from pathlib import Path
 
+from dashboard import ENTRY_KEYS, build_dashboard
 from gold_feed import asia_high_low, fetch_snapshot, fetch_spot, last_closed_m15
-from strategy import Box, beijing_now, compute_adx, evaluate, session_status
+from news_calendar import get_news_status
+from strategy import Box, beijing_now, compute_adx, compute_rsi, session_status
 
 ROOT = Path(__file__).resolve().parent
 CONFIG_PATH = ROOT / "config.json"
 PRICE_MS = 2500
 BAR_MS = 30000
+NEWS_MS = 300000
 ALERT_COOLDOWN_SEC = 180
 
 
@@ -51,69 +53,16 @@ def popup_alert(title: str, message: str) -> None:
     except Exception:
         pass
     try:
-        import tkinter as tk
         from tkinter import messagebox
 
-        root = tk._default_root
-        if root is not None:
-            root.bell()
-            messagebox.showinfo(title, message)
+        messagebox.showinfo(title, message)
     except Exception:
         print(f"[ALERT] {title}: {message}")
-
-
-def build_state(manual_h: float | None, manual_l: float | None):
-    snap = fetch_snapshot()
-    now = beijing_now()
-    auto = asia_high_low(snap.bars_15m, now)
-    if manual_h and manual_l:
-        box = Box(high=manual_h, low=manual_l)
-        box_src = "手动"
-    elif auto:
-        box = Box(high=auto[0], low=auto[1])
-        box_src = "自动(现货校准)"
-    else:
-        box = None
-        box_src = "未锁定"
-
-    adx = None
-    last_close = None
-    if snap.bars_15m:
-        highs = [b.high for b in snap.bars_15m]
-        lows = [b.low for b in snap.bars_15m]
-        closes = [b.close for b in snap.bars_15m]
-        adx = compute_adx(highs, lows, closes)
-        closed = last_closed_m15(snap.bars_15m)
-        last_close = closed.close if closed else None
-
-    signal = evaluate(snap.price, box, adx, last_close, now=now)
-    return snap, box, box_src, adx, signal, now
-
-
-def print_once() -> None:
-    cfg = load_config()
-    snap, box, box_src, adx, signal, now = build_state(cfg.get("asia_h"), cfg.get("asia_l"))
-    print(f"北京时间 {now:%H:%M:%S}  时段 {session_status(now)}")
-    print(f"现价 {snap.price:.2f}  来源 {snap.source}")
-    if box:
-        print(
-            f"盒子[{box_src}] H={box.high:.2f} L={box.low:.2f} "
-            f"上沿 {box.upper_start:.2f}-{box.high:.2f} 下沿 {box.low:.2f}-{box.lower_end:.2f}"
-        )
-    else:
-        print("盒子未锁定")
-    if adx:
-        print(f"ADX {adx.adx:.1f}  +DI {adx.plus_di:.1f}  -DI {adx.minus_di:.1f}")
-    print(f"[{signal.mode}] {signal.title}")
-    print(signal.message)
-    if snap.warning:
-        print("注意:", snap.warning)
 
 
 class App:
     def __init__(self) -> None:
         import tkinter as tk
-        from tkinter import ttk
 
         self.tk = tk
         self.cfg = load_config()
@@ -121,47 +70,68 @@ class App:
         self.last_alert_at = 0.0
         self.price_busy = False
         self.bar_busy = False
+        self.news_busy = False
         self.last_price: float | None = None
         self.cached_bars = []
         self.cached_adx = None
+        self.cached_rsi = None
         self.cached_last_close = None
         self.cached_auto_box = None
+        self.cached_news = get_news_status()
         self._bar_log = ""
 
         self.root = tk.Tk()
         self.root.title("亚盘盒子监测 · XAUUSD")
-        self.root.geometry("560x520")
+        self.root.geometry("620x680")
         self.root.configure(bg="#111318")
         self.root.attributes("-topmost", True)
 
-        style = ttk.Style()
-        try:
-            style.theme_use("clam")
-        except Exception:
-            pass
-
         fg = "#f5f5f5"
         muted = "#9aa3b2"
-        font_ui = ("Microsoft YaHei UI", 11)
+        font_ui = ("Microsoft YaHei UI", 10)
         font_big = ("Microsoft YaHei UI", 28, "bold")
 
         self.price_var = tk.StringVar(value="--")
         self.mode_var = tk.StringVar(value="启动中")
-        self.box_var = tk.StringVar(value="盒子：未锁定")
-        self.adx_var = tk.StringVar(value="ADX：--")
+        self.tick_var = tk.StringVar(value="等待第一次报价…")
+        self.indicators_var = tk.StringVar(value="指标加载中…")
+        self.news_var = tk.StringVar(value="大数据：加载中…")
         self.msg_var = tk.StringVar(value="正在拉取黄金价格…")
         self.status_var = tk.StringVar(value="")
         self.h_var = tk.StringVar(value=str(self.cfg.get("asia_h", "")))
         self.l_var = tk.StringVar(value=str(self.cfg.get("asia_l", "")))
         self.topmost_var = tk.BooleanVar(value=True)
 
-        tk.Label(self.root, text="现货黄金", fg=muted, bg="#111318", font=font_ui).pack(pady=(16, 0))
+        tk.Label(self.root, text="现货黄金", fg=muted, bg="#111318", font=font_ui).pack(pady=(12, 0))
         tk.Label(self.root, textvariable=self.price_var, fg="#f4d35e", bg="#111318", font=font_big).pack()
-        self.tick_var = tk.StringVar(value="等待第一次报价…")
-        tk.Label(self.root, textvariable=self.tick_var, fg="#7ee787", bg="#111318", font=("Microsoft YaHei UI", 10)).pack()
-        tk.Label(self.root, textvariable=self.mode_var, fg="#7ee787", bg="#111318", font=("Microsoft YaHei UI", 16, "bold")).pack(pady=4)
-        tk.Label(self.root, textvariable=self.box_var, fg=fg, bg="#111318", font=font_ui).pack()
-        tk.Label(self.root, textvariable=self.adx_var, fg=muted, bg="#111318", font=font_ui).pack()
+        tk.Label(self.root, textvariable=self.tick_var, fg="#7ee787", bg="#111318", font=font_ui).pack()
+        tk.Label(self.root, textvariable=self.mode_var, fg="#7ee787", bg="#111318", font=("Microsoft YaHei UI", 15, "bold")).pack(pady=4)
+
+        ind = tk.Label(
+            self.root,
+            textvariable=self.indicators_var,
+            fg=fg,
+            bg="#1c212b",
+            font=font_ui,
+            wraplength=580,
+            justify="left",
+            padx=12,
+            pady=10,
+        )
+        ind.pack(fill="x", padx=16, pady=6)
+
+        news = tk.Label(
+            self.root,
+            textvariable=self.news_var,
+            fg="#ffb86c",
+            bg="#2a1f12",
+            font=font_ui,
+            wraplength=580,
+            justify="left",
+            padx=12,
+            pady=8,
+        )
+        news.pack(fill="x", padx=16, pady=4)
 
         msg = tk.Label(
             self.root,
@@ -169,24 +139,24 @@ class App:
             fg=fg,
             bg="#1c212b",
             font=font_ui,
-            wraplength=500,
+            wraplength=580,
             justify="left",
             padx=12,
-            pady=12,
+            pady=10,
         )
-        msg.pack(fill="x", padx=18, pady=12)
+        msg.pack(fill="x", padx=16, pady=6)
 
         form = tk.Frame(self.root, bg="#111318")
-        form.pack(fill="x", padx=18)
+        form.pack(fill="x", padx=16)
         tk.Label(form, text="ASIA_H", fg=muted, bg="#111318").grid(row=0, column=0, sticky="w")
-        tk.Entry(form, textvariable=self.h_var, width=12).grid(row=0, column=1, padx=6)
+        tk.Entry(form, textvariable=self.h_var, width=10).grid(row=0, column=1, padx=4)
         tk.Label(form, text="ASIA_L", fg=muted, bg="#111318").grid(row=0, column=2, sticky="w")
-        tk.Entry(form, textvariable=self.l_var, width=12).grid(row=0, column=3, padx=6)
-        tk.Button(form, text="保存盒子", command=self.save_box).grid(row=0, column=4, padx=6)
-        tk.Button(form, text="用自动盒子", command=self.clear_box).grid(row=0, column=5)
+        tk.Entry(form, textvariable=self.l_var, width=10).grid(row=0, column=3, padx=4)
+        tk.Button(form, text="保存盒子", command=self.save_box).grid(row=0, column=4, padx=4)
+        tk.Button(form, text="自动盒子", command=self.clear_box).grid(row=0, column=5, padx=2)
 
         opts = tk.Frame(self.root, bg="#111318")
-        opts.pack(fill="x", padx=18, pady=8)
+        opts.pack(fill="x", padx=16, pady=8)
         tk.Checkbutton(
             opts,
             text="窗口置顶",
@@ -198,129 +168,18 @@ class App:
             activeforeground=fg,
             command=self.toggle_topmost,
         ).pack(side="left")
-        tk.Button(opts, text="测试提醒", command=self.test_alert).pack(side="right")
+        tk.Button(opts, text="测试提醒", command=self.test_alert).pack(side="right", padx=4)
+        tk.Button(opts, text="运行自测", command=self.run_selftest).pack(side="right")
 
         tk.Label(self.root, textvariable=self.status_var, fg=muted, bg="#111318", font=("Microsoft YaHei UI", 9)).pack(
-            side="bottom", pady=8
+            side="bottom", pady=6
         )
-        self.log = tk.Text(self.root, height=8, bg="#0d1017", fg="#c8d0dc", insertbackground="white", borderwidth=0)
-        self.log.pack(fill="both", expand=True, padx=18, pady=(0, 12))
+        self.log = tk.Text(self.root, height=7, bg="#0d1017", fg="#c8d0dc", insertbackground="white", borderwidth=0)
+        self.log.pack(fill="both", expand=True, padx=16, pady=(0, 10))
 
         self.root.after(300, self.refresh_price)
         self.root.after(800, self.refresh_bars)
-
-    def refresh_price(self) -> None:
-        if not self.price_busy:
-            self.price_busy = True
-            threading.Thread(target=self._poll_price, daemon=True).start()
-        self.root.after(PRICE_MS, self.refresh_price)
-
-    def refresh_bars(self) -> None:
-        if not self.bar_busy:
-            self.bar_busy = True
-            threading.Thread(target=self._poll_bars, daemon=True).start()
-        self.root.after(BAR_MS, self.refresh_bars)
-
-    def _manual_hl(self) -> tuple[float | None, float | None]:
-        h, l = self._parse_manual()
-        if not h:
-            h = self.cfg.get("asia_h")
-        if not l:
-            l = self.cfg.get("asia_l")
-        return h, l
-
-    def _make_box(self, auto):
-        h, l = self._manual_hl()
-        if h and l:
-            return Box(high=float(h), low=float(l)), "手动"
-        if auto:
-            return Box(high=auto[0], low=auto[1]), "自动"
-        return None, "未锁定"
-
-    def _poll_price(self) -> None:
-        try:
-            price, source = fetch_spot()
-            now = beijing_now()
-            box, box_src = self._make_box(self.cached_auto_box)
-            signal = evaluate(price, box, self.cached_adx, self.cached_last_close, now=now)
-            self.root.after(0, lambda: self._apply_price(price, source, box, box_src, signal, now))
-        except Exception as exc:
-            self.root.after(0, lambda e=str(exc): self._fail_price(e))
-
-    def _poll_bars(self) -> None:
-        try:
-            snap = fetch_snapshot()
-            auto = asia_high_low(snap.bars_15m, beijing_now())
-            adx = None
-            last_close = None
-            if snap.bars_15m:
-                adx = compute_adx(
-                    [b.high for b in snap.bars_15m],
-                    [b.low for b in snap.bars_15m],
-                    [b.close for b in snap.bars_15m],
-                )
-                closed = last_closed_m15(snap.bars_15m)
-                last_close = closed.close if closed else None
-            self.root.after(0, lambda: self._apply_bars(snap, auto, adx, last_close))
-        except Exception as exc:
-            self.root.after(0, lambda e=str(exc): self._fail_bars(e))
-
-    def _fail_price(self, err: str) -> None:
-        self.price_busy = False
-        self.status_var.set(f"报价失败：{err}")
-
-    def _fail_bars(self, err: str) -> None:
-        self.bar_busy = False
-        self.adx_var.set("ADX：K线暂不可用，现货仍在刷新")
-        msg = "K线暂不可用，请手动填 ASIA_H / ASIA_L（现货价不受影响）"
-        if msg != self._bar_log:
-            self._bar_log = msg
-            self.append_log(msg)
-
-    def _apply_bars(self, snap, auto, adx, last_close) -> None:
-        self.bar_busy = False
-        self.cached_bars = snap.bars_15m
-        self.cached_adx = adx
-        self.cached_last_close = last_close
-        self.cached_auto_box = auto
-        if adx:
-            self.adx_var.set(f"ADX {adx.adx:.1f}    +DI {adx.plus_di:.1f}    -DI {adx.minus_di:.1f}")
-        if snap.warning and snap.warning != self._bar_log:
-            self._bar_log = snap.warning
-            self.append_log(snap.warning)
-
-    def _apply_price(self, price, source, box, box_src, signal, now) -> None:
-        self.price_busy = False
-        delta = ""
-        if self.last_price is not None:
-            diff = price - self.last_price
-            if diff > 0:
-                delta = f"  ▲{diff:.2f}"
-            elif diff < 0:
-                delta = f"  ▼{abs(diff):.2f}"
-            else:
-                delta = "  ="
-        self.last_price = price
-        self.price_var.set(f"{price:,.2f}")
-        self.tick_var.set(f"实时 {now:%H:%M:%S}{delta}  每2.5秒刷新")
-        self.mode_var.set(f"{signal.mode} · {signal.title}")
-        if box:
-            self.box_var.set(
-                f"盒子[{box_src}]  H {box.high:.1f}  L {box.low:.1f}  "
-                f"上沿 {box.upper_start:.1f}-{box.high:.1f}  下沿 {box.low:.1f}-{box.lower_end:.1f}"
-            )
-        else:
-            self.box_var.set("盒子：未锁定（14:30后自动，或手动填写）")
-        self.msg_var.set(signal.message)
-        self.status_var.set(f"{now:%H:%M:%S}  {source}  时段 {session_status(now)}")
-
-        if signal.urgent and signal.key not in {"flat", "sleep"}:
-            now_ts = time.time()
-            if signal.key != self.last_alert_key or now_ts - self.last_alert_at > ALERT_COOLDOWN_SEC:
-                self.last_alert_key = signal.key
-                self.last_alert_at = now_ts
-                self.append_log(f"{signal.title} | {signal.message}")
-                popup_alert(signal.title, signal.message)
+        self.root.after(1500, self.refresh_news)
 
     def toggle_topmost(self) -> None:
         self.root.attributes("-topmost", bool(self.topmost_var.get()))
@@ -334,6 +193,149 @@ class App:
         if h and l and h > l:
             return h, l
         return None, None
+
+    def _make_box(self, auto):
+        h, l = self._parse_manual()
+        if not h:
+            h = self.cfg.get("asia_h")
+        if not l:
+            l = self.cfg.get("asia_l")
+        if h and l:
+            return Box(high=float(h), low=float(l)), "手动"
+        if auto:
+            return Box(high=auto[0], low=auto[1]), "自动"
+        return None, "未锁定"
+
+    def _render(self, price: float, source: str, now) -> None:
+        box, box_src = self._make_box(self.cached_auto_box)
+        dash = build_dashboard(
+            price,
+            box,
+            box_src,
+            self.cached_adx,
+            self.cached_rsi,
+            self.cached_last_close,
+            self.cached_news,
+            now,
+        )
+
+        delta = ""
+        if self.last_price is not None:
+            diff = price - self.last_price
+            if diff > 0:
+                delta = f"  ▲{diff:.2f}"
+            elif diff < 0:
+                delta = f"  ▼{abs(diff):.2f}"
+            else:
+                delta = "  ="
+        self.last_price = price
+
+        self.price_var.set(f"{price:,.2f}")
+        self.tick_var.set(f"实时 {now:%H:%M:%S}{delta}  |  时段 {dash.session}")
+        self.mode_var.set(f"{dash.signal.mode} · {dash.signal.title}")
+        self.indicators_var.set(dash.indicators_text)
+        self.news_var.set(f"📰 {dash.news.summary}\n{dash.news.detail}")
+        self.msg_var.set(dash.signal.message)
+        self.status_var.set(f"{now:%H:%M:%S}  {source}")
+
+        sig = dash.signal
+        should_alert = (
+            (dash.entry_ok and sig.key in ENTRY_KEYS)
+            or sig.key == "news_blackout"
+        ) and sig.key not in {"flat", "sleep"}
+
+        if should_alert:
+            now_ts = time.time()
+            if sig.key != self.last_alert_key or now_ts - self.last_alert_at > ALERT_COOLDOWN_SEC:
+                self.last_alert_key = sig.key
+                self.last_alert_at = now_ts
+                self.append_log(f"【提醒】{sig.title} | {sig.message}")
+                popup_alert(sig.title, sig.message)
+
+    def refresh_price(self) -> None:
+        if not self.price_busy:
+            self.price_busy = True
+            threading.Thread(target=self._poll_price, daemon=True).start()
+        self.root.after(PRICE_MS, self.refresh_price)
+
+    def refresh_bars(self) -> None:
+        if not self.bar_busy:
+            self.bar_busy = True
+            threading.Thread(target=self._poll_bars, daemon=True).start()
+        self.root.after(BAR_MS, self.refresh_bars)
+
+    def refresh_news(self) -> None:
+        if not self.news_busy:
+            self.news_busy = True
+            threading.Thread(target=self._poll_news, daemon=True).start()
+        self.root.after(NEWS_MS, self.refresh_news)
+
+    def _poll_price(self) -> None:
+        try:
+            price, source = fetch_spot()
+            now = beijing_now()
+            self.root.after(0, lambda: self._apply_price(price, source, now))
+        except Exception as exc:
+            self.root.after(0, lambda e=str(exc): self._fail_price(e))
+
+    def _poll_bars(self) -> None:
+        try:
+            snap = fetch_snapshot()
+            auto = asia_high_low(snap.bars_15m, beijing_now())
+            adx = rsi = last_close = None
+            if snap.bars_15m:
+                closes = [b.close for b in snap.bars_15m]
+                adx = compute_adx(
+                    [b.high for b in snap.bars_15m],
+                    [b.low for b in snap.bars_15m],
+                    closes,
+                )
+                rsi = compute_rsi(closes)
+                closed = last_closed_m15(snap.bars_15m)
+                last_close = closed.close if closed else None
+            self.root.after(0, lambda: self._apply_bars(snap.warning, auto, adx, rsi, last_close))
+        except Exception as exc:
+            self.root.after(0, lambda e=str(exc): self._fail_bars(e))
+
+    def _poll_news(self) -> None:
+        try:
+            news = get_news_status()
+            self.root.after(0, lambda: self._apply_news(news))
+        except Exception as exc:
+            self.root.after(0, lambda e=str(exc): self._fail_news(e))
+
+    def _fail_price(self, err: str) -> None:
+        self.price_busy = False
+        self.status_var.set(f"报价失败：{err}")
+
+    def _fail_bars(self, err: str) -> None:
+        self.bar_busy = False
+        msg = "K线暂不可用，请手动填 ASIA_H/L（ADX/RSI 可能为空）"
+        if msg != self._bar_log:
+            self._bar_log = msg
+            self.append_log(msg)
+
+    def _fail_news(self, err: str) -> None:
+        self.news_busy = False
+        self.news_var.set(f"📰 日历拉取失败：{err}")
+
+    def _apply_bars(self, warning, auto, adx, rsi, last_close) -> None:
+        self.bar_busy = False
+        self.cached_adx = adx
+        self.cached_rsi = rsi
+        self.cached_last_close = last_close
+        self.cached_auto_box = auto
+        if warning and warning != self._bar_log:
+            self._bar_log = warning
+            self.append_log(warning)
+
+    def _apply_news(self, news) -> None:
+        self.news_busy = False
+        self.cached_news = news
+
+    def _apply_price(self, price, source, now) -> None:
+        self.price_busy = False
+        self._render(price, source, now)
 
     def save_box(self) -> None:
         h, l = self._parse_manual()
@@ -354,8 +356,15 @@ class App:
         self.append_log("改回自动盒子")
 
     def test_alert(self) -> None:
-        popup_alert("亚盘盒子测试", "提醒通道正常。到点会弹出同样窗口。")
+        popup_alert("亚盘盒子测试", "提醒通道正常。推荐入场时会弹出同样窗口。")
         self.append_log("已发送测试提醒")
+
+    def run_selftest(self) -> None:
+        from selftest import run_selftest
+
+        self.append_log("开始自测…")
+        code = run_selftest(popup=True)
+        self.append_log("自测完成：全部通过" if code == 0 else "自测完成：有失败项，请看控制台")
 
     def append_log(self, line: str) -> None:
         stamp = beijing_now().strftime("%H:%M:%S")
@@ -366,10 +375,29 @@ class App:
         self.root.mainloop()
 
 
+def print_once() -> None:
+    cfg = load_config()
+    price, source = fetch_spot()
+    now = beijing_now()
+    box = None
+    if cfg.get("asia_h") and cfg.get("asia_l"):
+        box = Box(high=cfg["asia_h"], low=cfg["asia_l"])
+    dash = build_dashboard(price, box, "手动", None, None, None, None, now)
+    print(dash.indicators_text)
+    print(dash.news.summary)
+    print(f"[{dash.signal.mode}] {dash.signal.title}")
+    print(dash.signal.message)
+
+
 def main() -> None:
     parser = argparse.ArgumentParser(description="亚盘盒子黄金监测")
-    parser.add_argument("--once", action="store_true", help="只打印一次状态，不打开窗口")
+    parser.add_argument("--once", action="store_true", help="只打印一次状态")
+    parser.add_argument("--test", action="store_true", help="运行自测")
     args = parser.parse_args()
+    if args.test:
+        from selftest import run_selftest
+
+        sys.exit(run_selftest(popup="--popup" in sys.argv))
     if args.once:
         print_once()
         return
@@ -392,7 +420,7 @@ if __name__ == "__main__":
             pass
         print(tb)
         print("错误已写入:", log_path)
-        if "--once" not in sys.argv:
+        if "--once" not in sys.argv and "--test" not in sys.argv:
             try:
                 input("按回车退出...")
             except EOFError:

@@ -158,15 +158,26 @@ def _line_mode_signal(price: float, bars: list[object], lot: float) -> tuple[Sig
     near_dn = abs(close - dn_now) <= pad or (box_low <= close <= box_high)
 
     plan: dict | None = None
+    tol_now = 1.5  # 允许“现在下市价”的最大偏离（美元）
     if break_up:
         entry = up_now
         sl = entry - SL_USD
         tp = entry + 18.0
+        diff = abs(close - entry)
+        now_txt = f"当前价 {close:.1f} 与 Entry {entry:.1f} 差 ${diff:.1f}"
+        market_ok = diff <= tol_now
         sig = Signal(
             "line_long_call",
             "LINES",
             "画线偏多：上破压力",
-            f"H8风格：已上破下降压力。建议等回踩 {entry:.1f} 不破再多，SL {sl:.1f}，TP {tp:.1f}。",
+            (
+                f"H8风格：已上破下降压力。\n{now_txt}\n"
+                + (
+                    f"满足条件可直接市价做多（不等回踩）。SL {sl:.1f}，TP {tp:.1f}。"
+                    if market_ok
+                    else f"建议挂 Entry 限价回踩：{entry:.1f}，不破再多。SL {sl:.1f}，TP {tp:.1f}。"
+                )
+            ),
             True,
         )
         bias = "偏多"
@@ -175,11 +186,21 @@ def _line_mode_signal(price: float, bars: list[object], lot: float) -> tuple[Sig
         entry = dn_now
         sl = entry + SL_USD
         tp = entry - 18.0
+        diff = abs(close - entry)
+        now_txt = f"当前价 {close:.1f} 与 Entry {entry:.1f} 差 ${diff:.1f}"
+        market_ok = diff <= tol_now
         sig = Signal(
             "line_short_call",
             "LINES",
             "画线偏空：跌破支撑",
-            f"H8风格：已跌破下轨/支撑箱。建议等反抽 {entry:.1f} 承压再空，SL {sl:.1f}，TP {tp:.1f}。",
+            (
+                f"H8风格：已跌破下轨/支撑箱。\n{now_txt}\n"
+                + (
+                    f"满足条件可直接市价做空（不等反抽）。SL {sl:.1f}，TP {tp:.1f}。"
+                    if market_ok
+                    else f"建议挂 Entry 限价反抽承压：{entry:.1f}。SL {sl:.1f}，TP {tp:.1f}。"
+                )
+            ),
             True,
         )
         bias = "偏空"
@@ -192,7 +213,7 @@ def _line_mode_signal(price: float, bars: list[object], lot: float) -> tuple[Sig
             "line_wait",
             "LINES",
             "画线压力附近",
-            f"价格靠近下降压力 {up_now:.1f}，先防假突破。若出现阴吞噬可轻仓空：SL {sl:.1f} / TP {tp:.1f}。",
+            f"价格靠近下降压力 {up_now:.1f}，先防假突破。若出现阴吞噬可轻仓空：SL {sl:.1f} / TP {tp:.1f}。\n（如要市价：等你确认后再自己判断，不由软件强制）",
             False,
         )
         bias = "压力观察"
@@ -205,7 +226,7 @@ def _line_mode_signal(price: float, bars: list[object], lot: float) -> tuple[Sig
             "line_wait",
             "LINES",
             "画线支撑附近",
-            f"价格靠近支撑/需求区 {box_low:.1f}-{box_high:.1f}，若阳吞噬可轻仓多：SL {sl:.1f} / TP {tp:.1f}。",
+            f"价格靠近支撑/需求区 {box_low:.1f}-{box_high:.1f}，若出现阳吞噬可轻仓多：SL {sl:.1f} / TP {tp:.1f}。\n（如要市价：等你确认后再自己判断，不由软件强制）",
             False,
         )
         bias = "支撑观察"

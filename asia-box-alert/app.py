@@ -98,6 +98,7 @@ class App:
         self.grid_side_var = tk.StringVar(value=self.cfg.get("grid_side", "long"))
         self.grid_info_var = tk.StringVar(value="")
         self._low_space_mode = False
+        self._view_level = 0  # 0=完整, 1=收起顶部标题区, 2=再收起三块信息区
 
         # 用于“小窗极简显示”的组件引用
         self.price_title_label = tk.Label(self.root, text="现货黄金", fg=muted, bg="#111318", font=font_ui)
@@ -289,11 +290,13 @@ class App:
         # 允许拖拽移动小框：记录鼠标相对窗口左上角的偏移
         self._compact_drag_dx = 0
         self._compact_drag_dy = 0
+        self._compact_dragging = False
 
         def _compact_on_press(evt) -> None:
             try:
                 self._compact_drag_dx = evt.x_root - self.compact_win.winfo_x()
                 self._compact_drag_dy = evt.y_root - self.compact_win.winfo_y()
+                self._compact_dragging = False
             except Exception:
                 self._compact_drag_dx = 0
                 self._compact_drag_dy = 0
@@ -302,19 +305,30 @@ class App:
             try:
                 x = evt.x_root - self._compact_drag_dx
                 y = evt.y_root - self._compact_drag_dy
+                self._compact_dragging = True
                 self.compact_win.geometry(f"+{x}+{y}")
             except Exception:
                 pass
 
+        def _compact_on_release(_evt) -> None:
+            if not self._compact_dragging:
+                self._restore_from_compact()
+
         # 绑到整个窗口（标签上也会触发，保证好用）
         self.compact_win.bind("<Button-1>", _compact_on_press)
         self.compact_win.bind("<B1-Motion>", _compact_on_motion)
+        self.compact_win.bind("<ButtonRelease-1>", _compact_on_release)
         self.compact_price_label.bind("<Button-1>", _compact_on_press)
         self.compact_price_label.bind("<B1-Motion>", _compact_on_motion)
+        self.compact_price_label.bind("<ButtonRelease-1>", _compact_on_release)
         self.compact_tick_label.bind("<Button-1>", _compact_on_press)
         self.compact_tick_label.bind("<B1-Motion>", _compact_on_motion)
+        self.compact_tick_label.bind("<ButtonRelease-1>", _compact_on_release)
         self.root.bind("<Unmap>", self._on_unmap)
         self.root.bind("<Map>", self._on_map)
+        self.root.bind_all("<MouseWheel>", self._on_global_wheel)
+        self.root.bind_all("<Button-4>", self._on_global_wheel)
+        self.root.bind_all("<Button-5>", self._on_global_wheel)
 
         # 初始判定一次
         self.root.update_idletasks()
@@ -350,14 +364,71 @@ class App:
         try:
             sw = self.root.winfo_screenwidth()
             sh = self.root.winfo_screenheight()
-            # 放在右上角附近
-            x = sw - 190
-            y = 20
+            # 默认放在右下角（留一点边距）
+            x = max(0, sw - 140 - 16)
+            y = max(0, sh - 80 - 56)
         except Exception:
             x, y = 10, 10
         # 更小 + 仍可读
         self.compact_win.geometry(f"140x80+{x}+{y}")
         self.compact_win.deiconify()
+
+    def _restore_from_compact(self) -> None:
+        self.compact_win.withdraw()
+        try:
+            self.root.deiconify()
+            self.root.lift()
+            self.root.focus_force()
+        except Exception:
+            pass
+
+    def _on_global_wheel(self, evt) -> None:
+        """
+        下滑看下方内容：滚轮下滑逐级收起上方区域，滚轮上滑再展开。
+        这比强制固定窗口高度更适合小屏查看底部策略控件。
+        """
+        delta = 0
+        if hasattr(evt, "delta") and evt.delta:
+            delta = 1 if evt.delta > 0 else -1
+        elif getattr(evt, "num", None) == 4:
+            delta = 1
+        elif getattr(evt, "num", None) == 5:
+            delta = -1
+        if delta == 0:
+            return
+        if delta < 0 and self._view_level < 2:
+            self._view_level += 1
+            self._apply_view_level()
+        elif delta > 0 and self._view_level > 0:
+            self._view_level -= 1
+            self._apply_view_level()
+
+    def _apply_view_level(self) -> None:
+        # level 0: 全部显示
+        if self._view_level == 0:
+            self.price_title_label.pack(pady=(12, 0))
+            self.price_label.pack()
+            self.tick_label.pack()
+            self.mode_label.pack(pady=4)
+            self.ind_label.pack(fill="x", padx=16, pady=6)
+            self.news_label.pack(fill="x", padx=16, pady=4)
+            self.msg_label.pack(fill="x", padx=16, pady=6)
+            return
+        # level 1: 收起顶部价格标题区，优先看下面
+        if self._view_level >= 1:
+            self.price_title_label.pack_forget()
+            self.price_label.pack_forget()
+            self.tick_label.pack_forget()
+            self.mode_label.pack_forget()
+        # level 2: 再收起三块信息区，只保留图表和操作区
+        if self._view_level >= 2:
+            self.ind_label.pack_forget()
+            self.news_label.pack_forget()
+            self.msg_label.pack_forget()
+        else:
+            self.ind_label.pack(fill="x", padx=16, pady=6)
+            self.news_label.pack(fill="x", padx=16, pady=4)
+            self.msg_label.pack(fill="x", padx=16, pady=6)
 
     def _on_resize(self, _evt=None) -> None:
         """窗口大小变化时：做自适应缩放（不隐藏底部内容）。"""

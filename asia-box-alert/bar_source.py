@@ -4,7 +4,15 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 
-from gold_feed import Bar, fetch_em_bars, fetch_gc_bars, fetch_spot, shift_bars
+from gold_feed import (
+    Bar,
+    fetch_em_bars,
+    fetch_em_trend_bars,
+    fetch_gc_bars,
+    fetch_sina_min_bars,
+    fetch_spot,
+    shift_bars,
+)
 from spot_history import get_history
 
 
@@ -27,50 +35,91 @@ def _reference_spot() -> float | None:
         return None
 
 
+def _short_err(exc: Exception) -> str:
+    text = str(exc).replace("\n", " ")
+    if len(text) > 70:
+        text = text[:70] + "…"
+    return text
+
+
+def _pack_if_enough(bars: list[Bar], source: str, note: str) -> BarPack | None:
+    if len(bars) >= 20:
+        return BarPack(bars, source, note)
+    if len(bars) >= 5:
+        return BarPack(bars, f"{source} ({len(bars)}根)", "K线偏少，指标仅供参考")
+    return None
+
+
 def get_indicator_bars() -> BarPack:
     """Never raises — always returns a BarPack (bars may be empty)."""
     history = get_history()
     spot = _reference_spot()
-    yahoo_err = ""
+    errors: list[str] = []
 
-    # 1) Eastmoney M15 (国内常用)
+    # 1) Eastmoney 1-minute trends → M15（国内最稳）
     try:
-        em = fetch_em_bars(klt=15)
-        if len(em) >= 20:
-            return BarPack(em, "东财 M15", "K线来自东方财富，与 MT5 可能差几美元")
-        if len(em) >= 5:
-            return BarPack(em, f"东财 M15 ({len(em)}根)", "K线偏少，指标仅供参考")
+        pack = _pack_if_enough(
+            fetch_em_trend_bars(15),
+            "东财分时→M15",
+            "由东方财富分钟线合成，与 MT5 可能差几美元",
+        )
+        if pack:
+            return pack
     except Exception as exc:
-        yahoo_err = f"东财: {exc}; "
+        errors.append(f"东财分时 {_short_err(exc)}")
 
-    # 2) Yahoo GC=F M15
+    # 2) Sina 1-minute line → M15
+    try:
+        pack = _pack_if_enough(
+            fetch_sina_min_bars(15),
+            "新浪分时→M15",
+            "由新浪黄金分钟线合成，与 MT5 可能差几美元",
+        )
+        if pack:
+            return pack
+    except Exception as exc:
+        errors.append(f"新浪分时 {_short_err(exc)}")
+
+    # 3) Eastmoney official kline (often empty for XAU)
+    try:
+        pack = _pack_if_enough(
+            fetch_em_bars(klt=15),
+            "东财 M15",
+            "K线来自东方财富，与 MT5 可能差几美元",
+        )
+        if pack:
+            return pack
+    except Exception as exc:
+        errors.append(f"东财K线 {_short_err(exc)}")
+
+    # 4) Yahoo GC=F M15
     if spot is not None:
         try:
             raw, fut_last = fetch_gc_bars("15m", "5d")
-            bars = shift_bars(raw, spot - fut_last)
-            if len(bars) >= 20:
-                return BarPack(bars, "雅虎 M15", "K线来自 Yahoo，与 MT5 可能差几美元")
-            if len(bars) >= 5:
-                return BarPack(bars, f"雅虎 M15 ({len(bars)}根)", "K线偏少，指标仅供参考")
+            pack = _pack_if_enough(
+                shift_bars(raw, spot - fut_last),
+                "雅虎 M15",
+                "K线来自 Yahoo，与 MT5 可能差几美元",
+            )
+            if pack:
+                return pack
         except Exception as exc:
-            yahoo_err += str(exc)
-    elif not yahoo_err:
-        yahoo_err = "现货不可用，跳过雅虎 K 线"
+            errors.append(f"雅虎 {_short_err(exc)}")
+    else:
+        errors.append("现货不可用，跳过雅虎")
 
-    # 3) Local M15 from spot ticks
+    # 5) Local M15 from spot ticks
     m15 = history.m15_bars()
     if len(m15) >= 20:
         return BarPack(m15, f"本地 M15 ({len(m15)}根)", "在线 K 线不可用，用本程序积累的现货采样")
     if len(m15) >= 5:
         need = max(0, 20 - len(m15))
-        eta = need * 15
         return BarPack(
             m15,
             f"本地 M15 ({len(m15)}根)",
-            f"继续运行约 {eta} 分钟可算 ADX；M15收盘/RSI 已可用",
+            f"继续运行约 {need * 15} 分钟可算 ADX；M15收盘/RSI 已可用",
         )
 
-    # 4) Local M5 fallback (faster bootstrap)
     m5 = history.m5_bars()
     if len(m5) >= 15:
         return BarPack(
@@ -80,9 +129,9 @@ def get_indicator_bars() -> BarPack:
         )
 
     note = "正在积累现货采样。"
-    if yahoo_err:
-        note += f" 在线K线失败: {yahoo_err[:80]}"
-    note += f" 已采样 {history.tick_count} 次，约每 15 分钟 +1 根 M15。"
+    if errors:
+        note += " 在线K线：" + "；".join(errors[:2])
+    note += f" 已采样 {history.tick_count} 次。"
     if spot is None and history.tick_count == 0:
         note += " 网络全断时请填 MT5 现价并点「应用现价」。"
     return BarPack(m15 or m5, "暂无K线", note)

@@ -54,6 +54,30 @@ def _ssl_contexts():
     yield ssl._create_unverified_context()
 
 
+def _decode_body(raw: bytes) -> str:
+    if raw.startswith(b"\xef\xbb\xbf"):
+        raw = raw[3:]
+    for enc in ("utf-8-sig", "utf-8", "gbk"):
+        try:
+            return raw.decode(enc)
+        except UnicodeDecodeError:
+            continue
+    return raw.decode("utf-8", errors="replace")
+
+
+def _loads_payload(text: str) -> Any:
+    """JSON or JSONP, including UTF-8 BOM from some CN CDNs."""
+    text = text.strip().lstrip("\ufeff")
+    if text.startswith("/*"):
+        text = text.split("*/", 1)[-1].strip()
+    if text[:1] not in "{[" and "=" in text[:80]:
+        text = text.split("=", 1)[1].strip()
+    text = text.rstrip(";").strip()
+    if text.startswith("(") and text.endswith(")"):
+        text = text[1:-1]
+    return json.loads(text)
+
+
 def _get_json(url: str, timeout: float = 8, extra_headers: dict | None = None) -> Any:
     last: Exception | None = None
     headers = {**UA, **(extra_headers or {})}
@@ -62,7 +86,7 @@ def _get_json(url: str, timeout: float = 8, extra_headers: dict | None = None) -
             try:
                 req = Request(url, headers=headers)
                 with urlopen(req, timeout=timeout, context=ctx) as resp:
-                    return json.loads(resp.read().decode("utf-8"))
+                    return _loads_payload(_decode_body(resp.read()))
             except Exception as exc:
                 last = exc
                 time_mod.sleep(0.3)
@@ -270,15 +294,92 @@ def resolve_spot(manual: float | None = None) -> tuple[float, str]:
     return fetch_spot()
 
 
+def aggregate_bars(bars: list[Bar], minutes: int) -> list[Bar]:
+    buckets: dict[datetime, Bar] = {}
+    for b in bars:
+        ts = b.ts.astimezone(BEIJING).replace(second=0, microsecond=0)
+        start = ts.replace(minute=(ts.minute // minutes) * minutes)
+        if start not in buckets:
+            buckets[start] = Bar(ts=start, open=b.open, high=b.high, low=b.low, close=b.close)
+        else:
+            cur = buckets[start]
+            cur.high = max(cur.high, b.high)
+            cur.low = min(cur.low, b.low)
+            cur.close = b.close
+    return sorted(buckets.values(), key=lambda x: x.ts)
+
+
+def fetch_em_trend_bars(minutes: int = 15) -> list[Bar]:
+    """Build M15 from Eastmoney 1-minute trends (kline history is often empty for XAU)."""
+    path = (
+        "/api/qt/stock/trends2/get?secid=122.XAU"
+        "&fields1=f1,f2,f3,f4,f5,f6,f7,f8,f9,f10,f11,f12,f13"
+        "&fields2=f51,f52,f53,f54,f55,f56,f57,f58&iscr=0&ndays=5"
+    )
+    hosts = ("push2delay.eastmoney.com", "48.push2.eastmoney.com", "push2.eastmoney.com")
+    last_err: Exception | None = None
+    for host in hosts:
+        try:
+            data = _get_json(f"https://{host}{path}", extra_headers=EM_REFERER, timeout=10)
+            lines = (data.get("data") or {}).get("trends") or []
+            m1: list[Bar] = []
+            for line in lines:
+                parts = str(line).split(",")
+                if len(parts) < 5:
+                    continue
+                ts = datetime.strptime(parts[0].strip(), "%Y-%m-%d %H:%M").replace(tzinfo=BEIJING)
+                o, c, h, l = (float(parts[1]), float(parts[2]), float(parts[3]), float(parts[4]))
+                high, low = max(o, c, h, l), min(o, c, h, l)
+                m1.append(Bar(ts=ts, open=o, high=high, low=low, close=c))
+            bars = aggregate_bars(m1, minutes)
+            if len(bars) >= 5:
+                return bars
+            last_err = RuntimeError(f"too few bars: {len(bars)}")
+        except Exception as exc:
+            last_err = exc
+    raise RuntimeError(f"eastmoney trends: {last_err}") from last_err
+
+
+def fetch_sina_min_bars(minutes: int = 15) -> list[Bar]:
+    """Build M15 from Sina XAU 1-minute line (国内可连)."""
+    url = (
+        "https://stock2.finance.sina.com.cn/futures/api/openapi.php/"
+        "GlobalFuturesService.getGlobalFuturesMinLine?symbol=XAU"
+    )
+    data = _get_json(url, extra_headers=CN_REFERER, timeout=10)
+    rows = (((data.get("result") or {}).get("data") or {}).get("minLine_1d")) or []
+    m1: list[Bar] = []
+    for row in rows:
+        if not isinstance(row, list) or len(row) < 2:
+            continue
+        try:
+            ts = datetime.strptime(str(row[-1]), "%Y-%m-%d %H:%M:%S").replace(tzinfo=BEIJING)
+            price = float(row[5]) if len(row) >= 10 else float(row[1])
+        except (TypeError, ValueError):
+            continue
+        m1.append(Bar(ts=ts, open=price, high=price, low=price, close=price))
+    bars = aggregate_bars(m1, minutes)
+    if len(bars) < 5:
+        raise RuntimeError(f"sina min too few: {len(bars)}")
+    return bars
+
+
 def fetch_em_bars(klt: int = 15, days: int = 5) -> list[Bar]:
-    """M15/M5 bars from Eastmoney (122.XAU). Works on many CN networks."""
+    """M15/M5 bars from Eastmoney kline API (often empty for XAU)."""
     beg = (datetime.now(BEIJING) - timedelta(days=days)).strftime("%Y%m%d")
     end = datetime.now(BEIJING).strftime("%Y%m%d")
     path = (
         "/api/qt/stock/kline/get?secid=122.XAU"
-        f"&fields1=f1&fields2=f51,f52,f53,f54,f55&fqt=0&klt={klt}&beg={beg}&end={end}"
+        "&ut=fa5fd1943c7b386f172d6893dbfba10b"
+        f"&fields1=f1,f2,f3,f4,f5,f6&fields2=f51,f52,f53,f54,f55&fqt=0&klt={klt}"
+        f"&beg={beg}&end={end}&lmt=200"
     )
-    hosts = ("push2his.eastmoney.com", "48.push2his.eastmoney.com", "push2hisdelay.eastmoney.com")
+    hosts = (
+        "push2delay.eastmoney.com",
+        "push2his.eastmoney.com",
+        "48.push2his.eastmoney.com",
+        "push2hisdelay.eastmoney.com",
+    )
     last_err: Exception | None = None
     for host in hosts:
         try:
@@ -286,14 +387,20 @@ def fetch_em_bars(klt: int = 15, days: int = 5) -> list[Bar]:
             lines = (data.get("data") or {}).get("klines") or []
             bars: list[Bar] = []
             for line in lines:
-                parts = line.split(",")
+                parts = str(line).split(",")
                 if len(parts) < 5:
                     continue
-                ts = datetime.strptime(parts[0], "%Y-%m-%d %H:%M").replace(tzinfo=BEIJING)
+                ts_raw = parts[0].strip()
+                try:
+                    ts = datetime.strptime(ts_raw, "%Y-%m-%d %H:%M").replace(tzinfo=BEIJING)
+                except ValueError:
+                    ts = datetime.strptime(ts_raw, "%Y-%m-%d").replace(tzinfo=BEIJING)
                 o, c, h, l = (_em_scale(float(x)) for x in parts[1:5])
-                bars.append(Bar(ts=ts, open=o, high=h, low=l, close=c))
+                high, low = max(o, c, h, l), min(o, c, h, l)
+                bars.append(Bar(ts=ts, open=o, high=high, low=low, close=c))
             if len(bars) >= 5:
                 return bars
+            last_err = RuntimeError(f"empty klines from {host}")
         except Exception as exc:
             last_err = exc
     raise RuntimeError(f"eastmoney kline: {last_err}") from last_err

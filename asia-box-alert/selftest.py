@@ -111,6 +111,47 @@ def run_selftest(popup: bool = False) -> int:
     except Exception as exc:
         print(f"[SKIP] 现货联网自测跳过: {exc}")
 
+    print("\n=== K线解析自测 ===")
+    from gold_feed import _loads_payload, aggregate_bars, Bar
+
+    bom_json = "\ufeff{\"ok\": true, \"n\": 1}"
+    if _loads_payload(bom_json).get("ok") is True:
+        print("[OK] UTF-8 BOM JSON 可解析")
+        ok += 1
+    else:
+        print("[FAIL] BOM JSON")
+        fail += 1
+    jsonp = 'var k=({"minLine_1d":[1]});'
+    if _loads_payload(jsonp).get("minLine_1d") == [1]:
+        print("[OK] JSONP 可解析")
+        ok += 1
+    else:
+        print("[FAIL] JSONP")
+        fail += 1
+    sample_bars = [
+        Bar(ts=datetime(2026, 8, 18, 10, m, tzinfo=BEIJING), open=4400, high=4401, low=4399, close=4400 + m)
+        for m in range(0, 45)
+    ]
+    m15 = aggregate_bars(sample_bars, 15)
+    if len(m15) == 3:
+        print("[OK] 分钟线可合成 M15")
+        ok += 1
+    else:
+        print(f"[FAIL] M15 合成 {len(m15)}")
+        fail += 1
+    try:
+        from bar_source import get_indicator_bars
+
+        pack = get_indicator_bars()
+        if pack.bars and len(pack.bars) >= 5:
+            print(f"[OK] 在线K线 {pack.source} {len(pack.bars)}根")
+            ok += 1
+        else:
+            print(f"[FAIL] 在线K线不足: {pack.source} {pack.note}")
+            fail += 1
+    except Exception as exc:
+        print(f"[SKIP] 在线K线: {exc}")
+
     print("\n=== 本机目录同步自测 ===")
     from sync_local import DEFAULT_MIRROR, KEEP_NAMES, should_copy, sync_to_mirror
     from pathlib import Path

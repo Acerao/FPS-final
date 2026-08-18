@@ -395,40 +395,74 @@ class App:
         elif getattr(evt, "num", None) == 5:
             delta = -1
         if delta == 0:
-            return
+            return "break"
         if delta < 0 and self._view_level < 2:
             self._view_level += 1
             self._apply_view_level()
         elif delta > 0 and self._view_level > 0:
             self._view_level -= 1
             self._apply_view_level()
+        return "break"
 
-    def _apply_view_level(self) -> None:
-        # level 0: 全部显示
-        if self._view_level == 0:
+    def _pack_main_layout(self, show_top: bool, show_info: bool) -> None:
+        """
+        按固定顺序重排主区块，避免 pack_forget 后重新 pack 导致控件跑位。
+        """
+        blocks = [
+            self.price_title_label,
+            self.price_label,
+            self.tick_label,
+            self.mode_label,
+            self.ind_label,
+            self.news_label,
+            self.msg_label,
+            self.chart,
+            self.strat_frame,
+            self.form_frame,
+            self.form2_frame,
+            self.grid_frame,
+            self.opts_frame,
+        ]
+        for w in blocks:
+            w.pack_forget()
+
+        if show_top:
             self.price_title_label.pack(pady=(12, 0))
             self.price_label.pack()
             self.tick_label.pack()
             self.mode_label.pack(pady=4)
+        if show_info:
             self.ind_label.pack(fill="x", padx=16, pady=6)
             self.news_label.pack(fill="x", padx=16, pady=4)
             self.msg_label.pack(fill="x", padx=16, pady=6)
-            return
+
+        self.chart.pack(fill="x", padx=16, pady=(2, 6))
+        self.strat_frame.pack(fill="x", padx=16, pady=(8, 0))
+        self.form_frame.pack(fill="x", padx=16)
+        self.form2_frame.pack(fill="x", padx=16, pady=(4, 0))
+        self.grid_frame.pack(fill="x", padx=16, pady=(6, 0))
+        self.opts_frame.pack(fill="x", padx=16, pady=8)
+
+    def _apply_view_level(self) -> None:
+        # level 0: 全部显示
+        if self._view_level == 0:
+            self._pack_main_layout(show_top=True, show_info=True)
         # level 1: 收起顶部价格标题区，优先看下面
-        if self._view_level >= 1:
-            self.price_title_label.pack_forget()
-            self.price_label.pack_forget()
-            self.tick_label.pack_forget()
-            self.mode_label.pack_forget()
+        elif self._view_level == 1:
+            self._pack_main_layout(show_top=False, show_info=True)
         # level 2: 再收起三块信息区，只保留图表和操作区
-        if self._view_level >= 2:
-            self.ind_label.pack_forget()
-            self.news_label.pack_forget()
-            self.msg_label.pack_forget()
         else:
-            self.ind_label.pack(fill="x", padx=16, pady=6)
-            self.news_label.pack(fill="x", padx=16, pady=4)
-            self.msg_label.pack(fill="x", padx=16, pady=6)
+            self._pack_main_layout(show_top=False, show_info=False)
+
+        # 保持当前缩放样式（字号/边距）在重排后仍生效
+        try:
+            w = self.root.winfo_width()
+            h = self.root.winfo_height()
+            scale = min(w / 700.0, h / 820.0, 1.0)
+            scale = max(0.48, scale)
+            self._apply_responsive_scale(scale)
+        except Exception:
+            pass
 
     def _on_resize(self, _evt=None) -> None:
         """窗口大小变化时：做自适应缩放（不隐藏底部内容）。"""

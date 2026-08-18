@@ -207,6 +207,34 @@ def run_selftest(popup: bool = False) -> int:
         print(f"[FAIL] {msg}")
         fail += 1
 
+    print("\n=== 等距网格自测 ===")
+    from scale_grid import GridState, evaluate_grid
+
+    grid_now = datetime(2026, 8, 17, 16, 0, tzinfo=BEIJING)
+    st = GridState(side="long", anchor=4400, layers=2)
+    sig = evaluate_grid(4384, st, now=grid_now)
+    if sig.key == "grid_add":
+        print("[OK] 跌到下一层提醒加仓")
+        ok += 1
+    else:
+        print(f"[FAIL] 应加仓，得到 {sig.key}")
+        fail += 1
+    st3 = GridState(side="long", anchor=4400, layers=3)
+    sig = evaluate_grid(4398, st3, now=grid_now)
+    if sig.key == "grid_close_all":
+        print("[OK] 回弹到均价上方提醒全平")
+        ok += 1
+    else:
+        print(f"[FAIL] 应全平，得到 {sig.key}")
+        fail += 1
+    sig = evaluate_grid(4370, st3, now=grid_now)
+    if sig.key == "grid_stop_all":
+        print("[OK] 不回弹触及硬止损")
+        ok += 1
+    else:
+        print(f"[FAIL] 应止损，得到 {sig.key}")
+        fail += 1
+
     print("\n=== 入场提醒键自测 ===")
     for key in ENTRY_KEYS:
         print(f"  会弹提醒: {key}")

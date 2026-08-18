@@ -15,6 +15,7 @@ from bar_source import get_indicator_bars
 from dashboard import ENTRY_KEYS, build_dashboard
 from gold_feed import asia_high_low, fetch_spot, last_closed_m15, load_spot_cache, save_spot_cache
 from news_calendar import get_news_status
+from scale_grid import GRID_MAX_LAYERS, GridState
 from spot_history import get_history
 from strategy import Box, beijing_now, compute_adx, compute_rsi, session_status
 
@@ -65,7 +66,7 @@ class App:
 
         self.root = tk.Tk()
         self.root.title("亚盘盒子监测 · XAUUSD")
-        self.root.geometry("620x720")
+        self.root.geometry("640x780")
         self.root.configure(bg="#111318")
         self.root.attributes("-topmost", True)
 
@@ -85,6 +86,9 @@ class App:
         self.l_var = tk.StringVar(value=str(self.cfg.get("asia_l", "")))
         self.p_var = tk.StringVar(value=str(self.cfg.get("manual_price", "")))
         self.topmost_var = tk.BooleanVar(value=True)
+        self.strategy_var = tk.StringVar(value=self.cfg.get("strategy", "asia_box"))
+        self.grid_side_var = tk.StringVar(value=self.cfg.get("grid_side", "long"))
+        self.grid_info_var = tk.StringVar(value="")
 
         tk.Label(self.root, text="现货黄金", fg=muted, bg="#111318", font=font_ui).pack(pady=(12, 0))
         tk.Label(self.root, textvariable=self.price_var, fg="#f4d35e", bg="#111318", font=font_big).pack()
@@ -130,6 +134,25 @@ class App:
         )
         msg.pack(fill="x", padx=16, pady=6)
 
+        strat = tk.Frame(self.root, bg="#111318")
+        strat.pack(fill="x", padx=16, pady=(8, 0))
+        tk.Label(strat, text="策略", fg=muted, bg="#111318").pack(side="left")
+        self.strategy_box = tk.OptionMenu(
+            strat,
+            self.strategy_var,
+            "asia_box",
+            "scale_grid",
+            command=lambda _: self.on_strategy_change(),
+        )
+        self.strategy_box.pack(side="left", padx=6)
+        tk.Label(
+            strat,
+            text="asia_box=亚盘盒子  |  scale_grid=等距网格(回弹全平)",
+            fg=muted,
+            bg="#111318",
+            font=("Microsoft YaHei UI", 8),
+        ).pack(side="left")
+
         form = tk.Frame(self.root, bg="#111318")
         form.pack(fill="x", padx=16)
         tk.Label(form, text="ASIA_H", fg=muted, bg="#111318").grid(row=0, column=0, sticky="w")
@@ -151,6 +174,21 @@ class App:
             bg="#111318",
             font=("Microsoft YaHei UI", 9),
         ).grid(row=0, column=3, columnspan=3, sticky="w", padx=4)
+
+        gridf = tk.Frame(self.root, bg="#111318")
+        gridf.pack(fill="x", padx=16, pady=(6, 0))
+        tk.Label(gridf, text="网格方向", fg=muted, bg="#111318").grid(row=0, column=0, sticky="w")
+        tk.OptionMenu(gridf, self.grid_side_var, "long", "short").grid(row=0, column=1, padx=4)
+        tk.Button(gridf, text="开始本轮", command=self.start_grid).grid(row=0, column=2, padx=2)
+        tk.Button(gridf, text="记+1层", command=self.add_grid_layer).grid(row=0, column=3, padx=2)
+        tk.Button(gridf, text="结束本轮", command=self.end_grid).grid(row=0, column=4, padx=2)
+        tk.Label(
+            gridf,
+            text="long=跌了加多  short=涨了加空；等手数禁止翻倍",
+            fg=muted,
+            bg="#111318",
+            font=("Microsoft YaHei UI", 8),
+        ).grid(row=1, column=0, columnspan=5, sticky="w", pady=(2, 0))
 
         opts = tk.Frame(self.root, bg="#111318")
         opts.pack(fill="x", padx=16, pady=8)
@@ -226,6 +264,66 @@ class App:
             return price, f"本地采样({age_min}分钟前)"
         raise RuntimeError("无法获取报价：请检查网络，或在 MT5现价 填当前价后点「应用现价」")
 
+    def _grid_state(self) -> GridState:
+        try:
+            layers = int(self.cfg.get("grid_layers") or 0)
+        except (TypeError, ValueError):
+            layers = 0
+        try:
+            anchor = float(self.cfg.get("grid_anchor") or 0)
+        except (TypeError, ValueError):
+            anchor = 0.0
+        side = self.grid_side_var.get() or self.cfg.get("grid_side") or ""
+        if side not in {"long", "short"}:
+            side = ""
+        return GridState(side=side, anchor=anchor, layers=layers)
+
+    def on_strategy_change(self) -> None:
+        self.cfg["strategy"] = self.strategy_var.get()
+        save_config(self.cfg)
+        self.append_log("已切换策略：" + ("亚盘盒子" if self.cfg["strategy"] == "asia_box" else "等距网格"))
+        if self.last_price is not None:
+            self._render(self.last_price, self.cached_price_source or "现货", beijing_now())
+
+    def start_grid(self) -> None:
+        price = self.last_price or self._parse_manual_price()
+        if price is None:
+            self.append_log("没有现价，无法开始网格")
+            return
+        side = self.grid_side_var.get()
+        if side not in {"long", "short"}:
+            side = "long"
+        self.cfg["strategy"] = "scale_grid"
+        self.strategy_var.set("scale_grid")
+        self.cfg["grid_side"] = side
+        self.cfg["grid_anchor"] = round(price, 2)
+        self.cfg["grid_layers"] = 1
+        save_config(self.cfg)
+        self.append_log(f"网格开始：{side} 锚点 {price:.2f} 第1层（手数 0.01）")
+        self._render(price, self.cached_price_source or "现货", beijing_now())
+
+    def add_grid_layer(self) -> None:
+        st = self._grid_state()
+        if not st.active:
+            self.append_log("还没开始本轮网格")
+            return
+        if st.layers >= GRID_MAX_LAYERS:
+            self.append_log("已到最大层，不能再加")
+            return
+        self.cfg["grid_layers"] = st.layers + 1
+        save_config(self.cfg)
+        self.append_log(f"已记第 {st.layers + 1} 层（请在 MT5 确认已成交）")
+        if self.last_price is not None:
+            self._render(self.last_price, self.cached_price_source or "现货", beijing_now())
+
+    def end_grid(self) -> None:
+        self.cfg["grid_layers"] = 0
+        self.cfg["grid_anchor"] = 0
+        save_config(self.cfg)
+        self.append_log("本轮网格结束（请确认 MT5 已全平）")
+        if self.last_price is not None:
+            self._render(self.last_price, self.cached_price_source or "现货", beijing_now())
+
     def _make_box(self, auto):
         h, l = self._parse_manual()
         if not h:
@@ -252,6 +350,8 @@ class App:
             self.cached_bar_src,
             self.cached_bar_note,
             getattr(self, "cached_adx_tf", "M15"),
+            self.strategy_var.get() or "asia_box",
+            self._grid_state(),
         )
 
         delta = ""

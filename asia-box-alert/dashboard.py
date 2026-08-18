@@ -5,6 +5,19 @@ from __future__ import annotations
 from dataclasses import dataclass
 
 from news_calendar import NewsStatus, get_news_status
+from scale_grid import (
+    GRID_LOT,
+    GRID_MAX_LAYERS,
+    GRID_STEP,
+    GridState,
+    average_price,
+    basket_tp_price,
+    evaluate_grid,
+    float_pnl_usd,
+    layer_prices,
+    next_add_price,
+    stop_price,
+)
 from strategy import (
     ADX_RANGE_MAX,
     ADX_TREND_MIN,
@@ -20,7 +33,16 @@ from strategy import (
 )
 
 
-ENTRY_KEYS = {"a_buy", "a_sell", "b_long", "b_short"}
+ENTRY_KEYS = {
+    "a_buy",
+    "a_sell",
+    "b_long",
+    "b_short",
+    "grid_add",
+    "grid_close_all",
+    "grid_stop_all",
+    "grid_flatten",
+}
 
 
 @dataclass
@@ -76,13 +98,19 @@ def build_dashboard(
     bar_src: str = "",
     bar_note: str = "",
     adx_tf: str = "M15",
+    strategy: str = "asia_box",
+    grid: GridState | None = None,
 ) -> Dashboard:
     now = beijing_now(now)
     news = news or get_news_status(now)
     session = session_status(now)
     zone = price_zone(price, box)
     regime, broken = _regime(box, adx, price, m15_close)
-    signal = evaluate(price, box, adx, m15_close, now=now, news=news)
+    grid = grid or GridState()
+    if strategy == "scale_grid":
+        signal = evaluate_grid(price, grid, adx, now, news)
+    else:
+        signal = evaluate(price, box, adx, m15_close, now=now, news=news)
 
     entry_ok = signal.key in ENTRY_KEYS and not news.in_blackout
 
@@ -113,14 +141,40 @@ def build_dashboard(
     if missing:
         kline_line += f"\n⏳ {' · '.join(missing)}"
 
-    indicators_text = (
-        f"时段 {session}  |  日型 {regime}  |  位置 {zone}\n"
-        f"盒子 {box_txt}\n"
-        f"{kline_line}\n"
-        f"ADX {adx_txt}  |  RSI(M15) {rsi_txt}  |  M15收盘 {m15_txt}\n"
-        f"结构 {broken}  |  大数据 {news.summary}\n"
-        f"入场 {'✓ 可提醒' if entry_ok else '✗ 不适合'}"
-    )
+    if strategy == "scale_grid":
+        avg = average_price(grid)
+        tp = basket_tp_price(grid)
+        stop = stop_price(grid)
+        nxt = next_add_price(grid)
+        pnl = float_pnl_usd(price, grid)
+        levels = "、".join(f"{p:.1f}" for p in layer_prices(grid)) or "无"
+        side_cn = {"long": "多", "short": "空"}.get(grid.side, "未开")
+        lines = [
+            f"策略 等距网格（回弹全平，禁止翻倍马丁）  |  时段 {session}",
+            f"方向 {side_cn}  层数 {grid.layers}/{GRID_MAX_LAYERS}  间距 ${GRID_STEP:.0f}  手数 {GRID_LOT}",
+        ]
+        if avg and tp and stop:
+            nxt_txt = f"下一层 {nxt:.1f}" if nxt else "已到最大层"
+            pnl_txt = f"浮盈约 ${pnl:.0f}" if pnl is not None else ""
+            lines.append(f"成本 {levels}  均价 {avg:.1f}  全平 {tp:.1f}  硬止损 {stop:.1f}")
+            lines.append(f"{nxt_txt}  {pnl_txt}".strip())
+        else:
+            lines.append(
+                f"尚未开始。点「开始本轮」用现价开第1层；每 ${GRID_STEP:.0f} 等量加一层，最多 {GRID_MAX_LAYERS} 层，回弹全平。"
+            )
+        lines.append(kline_line)
+        lines.append(f"ADX {adx_txt}  |  RSI(M15) {rsi_txt}  |  大数据 {news.summary}")
+        lines.append("✓ 可提醒" if entry_ok else "观察中")
+        indicators_text = "\n".join(lines)
+    else:
+        indicators_text = (
+            f"策略 亚盘盒子  |  时段 {session}  |  日型 {regime}  |  位置 {zone}\n"
+            f"盒子 {box_txt}\n"
+            f"{kline_line}\n"
+            f"ADX {adx_txt}  |  RSI(M15) {rsi_txt}  |  M15收盘 {m15_txt}\n"
+            f"结构 {broken}  |  大数据 {news.summary}\n"
+            f"入场 {'✓ 可提醒' if entry_ok else '✗ 不适合'}"
+        )
 
     return Dashboard(
         price=price,

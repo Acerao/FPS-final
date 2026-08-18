@@ -353,7 +353,7 @@ class App:
         self.compact_win.deiconify()
 
     def _on_resize(self, _evt=None) -> None:
-        """窗口变小后进入“极简实时金价”模式。"""
+        """窗口大小变化时：做自适应缩放（不隐藏底部内容）。"""
         try:
             w = self.root.winfo_width()
             h = self.root.winfo_height()
@@ -366,18 +366,13 @@ class App:
         except Exception:
             pass
 
-        # 真正极端小：才启用“只显示金价”的极简模式
-        compact = w < 300 or h < 200
-        if compact:
-            self._set_compact_mode(True)
-            return
-
+        # 不对“缩小尺寸”启用隐藏模式；隐藏模式只由最小化（iconic）触发的小框承担
         if self._compact_mode:
             self._set_compact_mode(False)
 
         # 常规缩放：根据窗口尺寸动态缩字体/换行宽度/图表高度，避免界面拉长挤爆
         scale = min(w / 700.0, h / 820.0, 1.0)
-        scale = max(0.58, scale)  # 下限避免字体太小
+        scale = max(0.48, scale)  # 下限避免字体太小，同时尽量保证内容仍可见
         self._apply_responsive_scale(scale)
 
     def _apply_responsive_scale(self, scale: float) -> None:
@@ -430,7 +425,8 @@ class App:
             self.log.pack_forget()
             self.price_label.configure(font=("Microsoft YaHei UI", 18, "bold"))
             self.tick_label.configure(font=("Microsoft YaHei UI", 9))
-            self.root.geometry("360x140")
+            # 不强行改主窗口大小，避免打断用户缩放
+            # self.root.geometry("360x140")
         else:
             # 恢复原界面
             self.price_label.configure(font=self._font_big)
@@ -448,7 +444,8 @@ class App:
             self.opts_frame.pack(fill="x", padx=16, pady=8)
             self.status_label.pack(side="bottom", pady=6)
             self.log.pack(fill="both", expand=True, padx=16, pady=(0, 10))
-            self.root.geometry("700x820")
+            # 同样不强行改回默认尺寸
+            # self.root.geometry("700x820")
 
     def _parse_manual(self) -> tuple[float | None, float | None]:
         try:

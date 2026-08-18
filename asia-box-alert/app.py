@@ -68,7 +68,7 @@ class App:
         self.root.title("亚盘盒子监测 · XAUUSD")
         self.root.geometry("700x820")
         self.root.configure(bg="#111318")
-        self.root.attributes("-topmost", True)
+        self.root.attributes("-topmost", bool(self.cfg.get("topmost", False)))
 
         fg = "#f5f5f5"
         muted = "#9aa3b2"
@@ -89,7 +89,7 @@ class App:
         self.h_var = tk.StringVar(value=str(self.cfg.get("asia_h", "")))
         self.l_var = tk.StringVar(value=str(self.cfg.get("asia_l", "")))
         self.p_var = tk.StringVar(value=str(self.cfg.get("manual_price", "")))
-        self.topmost_var = tk.BooleanVar(value=True)
+        self.topmost_var = tk.BooleanVar(value=bool(self.cfg.get("topmost", False)))
         self.strategy_var = tk.StringVar(value=self.cfg.get("strategy", "asia_box"))
         self.lot_var = tk.StringVar(value=str(self.cfg.get("lot", "0.02")))
         self.grid_side_var = tk.StringVar(value=self.cfg.get("grid_side", "long"))
@@ -324,7 +324,10 @@ class App:
         self.root.after(1500, self.refresh_news)
 
     def toggle_topmost(self) -> None:
-        self.root.attributes("-topmost", bool(self.topmost_var.get()))
+        topmost = bool(self.topmost_var.get())
+        self.root.attributes("-topmost", topmost)
+        self.cfg["topmost"] = topmost
+        save_config(self.cfg)
 
     def _on_unmap(self, _evt=None) -> None:
         """窗口被最小化/隐藏后：显示极简金价框。"""
@@ -381,21 +384,44 @@ class App:
         price_big = max(14, int(28 * scale))
         mode_size = max(10, int(15 * scale))
         tick_size = max(8, int(10 * scale))
-        ui_size = max(8, int(10 * scale))
+        ui_size = max(7, int(10 * scale))
         ui_small = max(7, int(9 * scale))
         wrap = max(260, int(580 * scale))
+        pad_in_x = max(6, int(12 * scale))
+        pad_in_y = max(4, int(10 * scale))
+        pad_out_x = max(8, int(16 * scale))
+        pad_out_y = max(2, int(6 * scale))
 
         # 价格/标题
         self.price_label.configure(font=("Microsoft YaHei UI", price_big, "bold"))
         self.tick_label.configure(font=("Microsoft YaHei UI", tick_size))
         self.mode_label.configure(font=("Microsoft YaHei UI", mode_size, "bold"))
-        self.ind_label.configure(wraplength=wrap)
-        self.news_label.configure(wraplength=wrap)
-        self.msg_label.configure(wraplength=wrap)
+        self.ind_label.configure(
+            wraplength=wrap,
+            font=("Microsoft YaHei UI", ui_size),
+            padx=pad_in_x,
+            pady=pad_in_y,
+        )
+        self.news_label.configure(
+            wraplength=wrap,
+            font=("Microsoft YaHei UI", ui_small),
+            padx=pad_in_x,
+            pady=max(3, int(8 * scale)),
+        )
+        self.msg_label.configure(
+            wraplength=wrap,
+            font=("Microsoft YaHei UI", ui_size),
+            padx=pad_in_x,
+            pady=pad_in_y,
+        )
+        self.ind_label.pack_configure(padx=pad_out_x, pady=pad_out_y)
+        self.news_label.pack_configure(padx=pad_out_x, pady=max(2, int(4 * scale)))
+        self.msg_label.pack_configure(padx=pad_out_x, pady=pad_out_y)
 
         # Canvas 高度（宽由 pack fill="x" 控制）
         canvas_h = max(80, int(230 * scale))
         self.chart.configure(height=canvas_h)
+        self.chart.pack_configure(padx=pad_out_x, pady=(max(1, int(2 * scale)), pad_out_y))
 
         # 底部日志：偏小高度会挤，适当缩短；极端情况由 compact mode 处理
         try:

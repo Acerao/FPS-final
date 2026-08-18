@@ -867,6 +867,10 @@ class App:
             bars = aggregate_bars(base_m15, 60)
         else:
             bars = base_m15
+        ov = dash.line_overlay or {}
+        n_fit = ov.get("n_bars")
+        if isinstance(n_fit, int) and 2 <= n_fit <= len(bars):
+            bars = bars[-n_fit:]
 
         if len(bars) < MIN_LINE_BARS:
             self.chart.create_text(
@@ -904,11 +908,12 @@ class App:
             color = "#2ea043" if c >= o else "#f85149"
             self.chart.create_rectangle(x - half, min(y1, y2), x + half, max(y1, y2), outline=color, fill=color)
 
-        ov = dash.line_overlay or {}
         up = ov.get("upper_fit")
         dn = ov.get("lower_fit")
-        line_dash = (4, 3) if not descending else ()
-        line_color = "#6e7681" if not descending else "#58a6ff"
+        descending = bool(ov.get("descending"))
+        # 通道不成立也保持亮蓝，只用虚线表示“仅参考”，避免深灰在暗底上看不见
+        line_dash = (5, 3) if not descending else ()
+        line_color = "#58a6ff"
         if up:
             y1 = py(up[0] * 0 + up[1])
             y2 = py(up[0] * (len(bars) - 1) + up[1])

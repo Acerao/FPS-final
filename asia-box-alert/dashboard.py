@@ -210,6 +210,18 @@ def _line_mode_signal(price: float, bars: list[object], lot: float) -> tuple[Sig
 
     up_line = _two_pt_line(hi_pts[-2], hi_pts[-1]) if len(hi_pts) >= 2 else None
     dn_line = _two_pt_line(lo_pts[-2], lo_pts[-1]) if len(lo_pts) >= 2 else None
+    if up_line is None:
+        hi_i = max(range(n), key=lambda i: float(getattr(bars[i], "high")))
+        hi_j = n - 1
+        if hi_i == hi_j and n >= 3:
+            hi_i = n - 3
+        up_line = _two_pt_line((hi_i, float(getattr(bars[hi_i], "high"))), (hi_j, float(getattr(bars[hi_j], "high"))))
+    if dn_line is None:
+        lo_i = min(range(n), key=lambda i: float(getattr(bars[i], "low")))
+        lo_j = n - 1
+        if lo_i == lo_j and n >= 3:
+            lo_i = n - 3
+        dn_line = _two_pt_line((lo_i, float(getattr(bars[lo_i], "low"))), (lo_j, float(getattr(bars[lo_j], "low"))))
 
     up_now = _line_y(up_line, last_x, max(float(getattr(b, "high")) for b in bars[-20:]))
     dn_now = _line_y(dn_line, last_x, min(float(getattr(b, "low")) for b in bars[-20:]))
@@ -313,6 +325,7 @@ def _line_mode_signal(price: float, bars: list[object], lot: float) -> tuple[Sig
         "lot": lot,
         "suggest_tp": 18.0,
         "plan": plan,
+        "n_bars": n,
     }
     return sig, overlay
 

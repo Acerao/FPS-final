@@ -35,6 +35,7 @@ from strategy import (
     risk_dollars,
     session_status,
 )
+from gold_feed import aggregate_bars
 
 
 def _profile_for(strategy: str) -> str:
@@ -51,6 +52,7 @@ def _strategy_label(strategy: str) -> str:
         "asia_box_hwr": "亚盘盒子·高胜率",
         "asia_box_sprint": "亚盘盒子·冲刺$1k",
         "asia_box_lines": "画线策略·大熊式",
+        "asia_box_lines_h1": "画线策略·小时级",
         "scale_grid": "等距网格",
     }.get(strategy, strategy)
 
@@ -298,15 +300,27 @@ def build_dashboard(
     zone = price_zone(price, box)
     regime, broken = _regime(box, adx, price, m15_close)
     grid = grid or GridState()
+    line_close: float | None = None
     if strategy == "scale_grid":
         signal = evaluate_grid(price, grid, adx, now, news)
         line_overlay = None
     elif strategy == "asia_box_lines":
+        line_close = m15_close
         line_bars = m15_bars[-120:] if m15_bars else []
         if len(line_bars) < 20:
             signal = Signal("line_wait", "LINES", "画线数据不足", "K线不足，至少需要约 20 根再画线。", False)
             line_overlay = None
         else:
+            signal, line_overlay = _line_mode_signal(price, line_bars, clamp_lot(lot))
+    elif strategy == "asia_box_lines_h1":
+        # 用 H1 聚合后的K线来做“大熊式画线单”的尺度（更符合“小时级画线”的习惯）
+        raw = m15_bars[-240:] if m15_bars else []
+        line_bars = aggregate_bars(raw, 60)
+        if len(line_bars) < 20:
+            signal = Signal("line_wait", "LINES", "画线数据不足", "H1 K线不足，至少需要约 20 根再画线。", False)
+            line_overlay = None
+        else:
+            line_close = float(getattr(line_bars[-1], "close", None))
             signal, line_overlay = _line_mode_signal(price, line_bars, clamp_lot(lot))
     else:
         profile = _profile_for(strategy)
@@ -332,6 +346,7 @@ def build_dashboard(
     else:
         adx_txt = "--"
     m15_txt = f"{m15_close:.2f}" if m15_close is not None else "--"
+    line_txt = f"{line_close:.2f}" if line_close is not None else m15_txt
     box_txt = (
         f"H {box.high:.1f}  L {box.low:.1f}  RANGE {box.range:.1f}  [{box_src}]"
         if box
@@ -377,14 +392,15 @@ def build_dashboard(
         lines.append(f"ADX {adx_txt}  |  RSI(M15) {rsi_txt}  |  大数据 {news.summary}")
         lines.append("✓ 可提醒" if entry_ok else "观察中")
         indicators_text = "\n".join(lines)
-    elif strategy == "asia_box_lines":
+    elif strategy == "asia_box_lines" or strategy == "asia_box_lines_h1":
         used_lot = clamp_lot(lot)
         sl_risk = risk_dollars(used_lot, SL_USD)
+        tf_txt = "M15" if strategy == "asia_box_lines" else "H1"
         indicators_text = (
             f"策略 {_strategy_label(strategy)}  |  时段 {session}  |  位置 {zone}\n"
             f"手数 {used_lot}  单笔止损约 ${sl_risk:.0f}  |  原理：2点连线+破位收盘+等回踩\n"
             f"{kline_line}\n"
-            f"ADX {adx_txt}  |  RSI(M15) {rsi_txt}  |  M15收盘 {m15_txt}\n"
+            f"ADX {adx_txt}  |  RSI(M15) {rsi_txt}  |  {tf_txt}收盘 {line_txt}\n"
             f"建议 {'✓ 可提醒' if entry_ok else '✗ 等待'}"
         )
     else:

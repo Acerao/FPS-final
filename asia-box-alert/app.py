@@ -13,7 +13,7 @@ from pathlib import Path
 from alerts import popup_alert
 from bar_source import get_indicator_bars
 from dashboard import ENTRY_KEYS, build_dashboard
-from gold_feed import asia_high_low, fetch_spot, last_closed_m15, load_spot_cache, save_spot_cache
+from gold_feed import asia_high_low, fetch_spot, last_closed_m15, load_spot_cache, save_spot_cache, aggregate_bars
 from news_calendar import get_news_status
 from scale_grid import GRID_MAX_LAYERS, GridState
 from spot_history import get_history
@@ -154,6 +154,7 @@ class App:
             "asia_box_hwr",
             "asia_box_sprint",
             "asia_box_lines",
+            "asia_box_lines_h1",
             "scale_grid",
             command=lambda _: self.on_strategy_change(),
         )
@@ -330,6 +331,7 @@ class App:
             "asia_box_hwr": "亚盘盒子·高胜率",
             "asia_box_sprint": "亚盘盒子·冲刺$1k",
             "asia_box_lines": "画线策略·H8风格",
+            "asia_box_lines_h1": "画线策略·小时级",
             "scale_grid": "等距网格",
         }
         self.append_log("已切换策略：" + labels.get(self.cfg["strategy"], self.cfg["strategy"]))
@@ -443,10 +445,25 @@ class App:
 
     def _draw_chart(self, dash) -> None:
         self.chart.delete("all")
-        bars = self.cached_bars[-90:] if self.cached_bars else []
-        if self.strategy_var.get() != "asia_box_lines":
-            self.chart.create_text(330, 115, fill="#57606a", text="切到 asia_box_lines 可查看 K线与画线", font=("Microsoft YaHei UI", 10))
+        strategy = self.strategy_var.get()
+        if strategy not in {"asia_box_lines", "asia_box_lines_h1"}:
+            self.chart.create_text(
+                330,
+                115,
+                fill="#57606a",
+                text="切到画线策略可查看 K线与画线",
+                font=("Microsoft YaHei UI", 10),
+            )
             return
+
+        # asia_box_lines: 直接用当前缓存 K线（实际为 M15）
+        # asia_box_lines_h1: 把 M15 聚合成 H1，用于更贴近“小时级画线单”的尺度
+        base_m15 = self.cached_bars[-240:] if self.cached_bars else []
+        if strategy == "asia_box_lines_h1":
+            bars = aggregate_bars(base_m15, 60)
+        else:
+            bars = base_m15
+
         if len(bars) < 20:
             self.chart.create_text(330, 115, fill="#9aa3b2", text="K线不足，等待更多数据后画线", font=("Microsoft YaHei UI", 10))
             return

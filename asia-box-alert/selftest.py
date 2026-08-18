@@ -231,6 +231,52 @@ def run_selftest(popup: bool = False) -> int:
     except Exception as exc:
         print(f"[SKIP] 在线K线: {exc}")
 
+    print("\n=== 画线小时级自测 ===")
+    try:
+        from datetime import timedelta
+
+        dummy_start = datetime(2026, 8, 17, 10, 0, tzinfo=BEIJING)
+        m15_bars = []
+        for i in range(160):  # 160 M15 ≈ 40 H1，足够触发“至少约20根”
+            ts = dummy_start + timedelta(minutes=i * 15)
+            base = 4415 - i * 0.08  # 让数据整体略偏下降，利于构建“下降通道”形态（不要求必须）
+            m15_bars.append(Bar(ts=ts, open=base, high=base + 1.0, low=base - 1.0, close=base + 0.2))
+        last_close = float(m15_bars[-1].close)
+
+        fake_news = NewsStatus(
+            in_blackout=False,
+            today_events=[],
+            active=None,
+            next_event=None,
+            summary="测试",
+            detail="",
+        )
+        dash = build_dashboard(
+            last_close,
+            box,
+            "测试",
+            AdxState(18, 20, 18),
+            33.0,
+            last_close,
+            news=fake_news,
+            now=noon,
+            bar_src="TEST",
+            bar_note="",
+            adx_tf="M15",
+            strategy="asia_box_lines_h1",
+            grid=None,
+            m15_bars=m15_bars,
+            lot=0.02,
+        )
+        if dash.indicators_text and ("小时级" in dash.indicators_text or "H1" in dash.indicators_text):
+            print("[OK] 小时级画线 build_dashboard 可用")
+            ok += 1
+        else:
+            print("[FAIL] 小时级画线 indicators_text 异常")
+            fail += 1
+    except Exception as exc:
+        print(f"[SKIP] 小时级画线自测跳过: {exc}")
+
     print("\n=== 本机目录同步自测 ===")
     from sync_local import DEFAULT_MIRROR, KEEP_NAMES, should_copy, sync_to_mirror
     from pathlib import Path

@@ -90,6 +90,27 @@ def run_selftest(popup: bool = False) -> int:
         print("[FAIL] 报价缓存")
         fail += 1
 
+    print("\n=== 国内报价源自测 ===")
+    from gold_feed import _parse_js_quote, fetch_spot
+
+    sample = 'var hq_str_hf_XAU="4397.36,4416.5,4397.36,4397.71,4435.95,4394.18";\n'
+    if abs(_parse_js_quote(sample) - 4397.36) < 0.01:
+        print("[OK] 新浪报价格式解析")
+        ok += 1
+    else:
+        print("[FAIL] 新浪解析")
+        fail += 1
+    try:
+        price, src = fetch_spot()
+        cn = any(k in src for k in ("新浪", "腾讯", "东方", "小渡"))
+        print(f"[{'OK' if cn or price > 500 else 'FAIL'}] 现货 {price:.2f} ← {src}")
+        if price > 500:
+            ok += 1
+        else:
+            fail += 1
+    except Exception as exc:
+        print(f"[SKIP] 现货联网自测跳过: {exc}")
+
     print("\n=== 入场提醒键自测 ===")
     for key in ENTRY_KEYS:
         print(f"  会弹提醒: {key}")

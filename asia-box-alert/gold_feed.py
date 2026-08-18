@@ -18,8 +18,16 @@ ROOT = Path(__file__).resolve().parent
 CACHE_FILE = ROOT / "last_spot.json"
 
 UA = {
-    "User-Agent": "Mozilla/5.0 AsiaBoxAlert/1.2",
-    "Accept": "application/json",
+    "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 AsiaBoxAlert/1.3",
+    "Accept": "application/json,text/plain,*/*",
+}
+
+CN_REFERER = {
+    "Referer": "https://finance.sina.com.cn/",
+}
+
+EM_REFERER = {
+    "Referer": "https://quote.eastmoney.com/",
 }
 
 
@@ -46,18 +54,56 @@ def _ssl_contexts():
     yield ssl._create_unverified_context()
 
 
-def _get_json(url: str, timeout: float = 8) -> Any:
+def _get_json(url: str, timeout: float = 8, extra_headers: dict | None = None) -> Any:
     last: Exception | None = None
+    headers = {**UA, **(extra_headers or {})}
     for ctx in _ssl_contexts():
         for _ in range(2):
             try:
-                req = Request(url, headers=UA)
+                req = Request(url, headers=headers)
                 with urlopen(req, timeout=timeout, context=ctx) as resp:
                     return json.loads(resp.read().decode("utf-8"))
             except Exception as exc:
                 last = exc
                 time_mod.sleep(0.3)
     raise RuntimeError(f"network error: {last}") from last
+
+
+def _get_text(url: str, timeout: float = 8, extra_headers: dict | None = None, encoding: str = "utf-8") -> str:
+    last: Exception | None = None
+    headers = {**UA, **(extra_headers or {})}
+    for ctx in _ssl_contexts():
+        for _ in range(2):
+            try:
+                req = Request(url, headers=headers)
+                with urlopen(req, timeout=timeout, context=ctx) as resp:
+                    raw = resp.read()
+                    for enc in (encoding, "gbk", "utf-8"):
+                        try:
+                            return raw.decode(enc)
+                        except UnicodeDecodeError:
+                            continue
+                    return raw.decode("utf-8", errors="replace")
+            except Exception as exc:
+                last = exc
+                time_mod.sleep(0.3)
+    raise RuntimeError(f"network error: {last}") from last
+
+
+def _parse_js_quote(text: str) -> float:
+    """Parse sina/tencent var quote: ...=\"price,...\" """
+    inner = text.split('"')[1]
+    price = float(inner.split(",")[0])
+    if price <= 0:
+        raise RuntimeError("quote price invalid")
+    return price
+
+
+def _em_scale(raw: float) -> float:
+    """Eastmoney int prices are usually x100 for XAU."""
+    if raw > 10000:
+        return raw / 100.0
+    return raw
 
 
 def save_spot_cache(price: float, source: str, when: datetime | None = None) -> None:
@@ -109,6 +155,44 @@ def _yahoo_spot(symbol: str) -> float:
     raise RuntimeError(f"yahoo {symbol}: {last}") from last
 
 
+def _spot_sina() -> float:
+    text = _get_text("https://hq.sinajs.cn/?list=hf_XAU", extra_headers=CN_REFERER, encoding="gbk")
+    return _parse_js_quote(text)
+
+
+def _spot_tencent() -> float:
+    text = _get_text("https://qt.gtimg.cn/q=hf_XAU", extra_headers=CN_REFERER, encoding="gbk")
+    return _parse_js_quote(text)
+
+
+def _spot_eastmoney() -> float:
+    hosts = ("push2delay.eastmoney.com", "48.push2.eastmoney.com", "push2.eastmoney.com")
+    last: Exception | None = None
+    for host in hosts:
+        try:
+            url = f"https://{host}/api/qt/stock/get?secid=122.XAU&fields=f43,f57"
+            data = _get_json(url, extra_headers=EM_REFERER)
+            raw = float(data["data"]["f43"])
+            price = _em_scale(raw)
+            if price > 500:
+                return price
+        except Exception as exc:
+            last = exc
+    raise RuntimeError(f"eastmoney spot: {last}") from last
+
+
+def _spot_dwo() -> float:
+    data = _get_json("https://openapi.dwo.cc/api/jinjia")
+    futures = data.get("data", {}).get("futures") or []
+    for item in futures:
+        name = str(item.get("name", ""))
+        if "黄金" in name and "白银" not in name:
+            price = float(item["trade_price"])
+            if price > 500:
+                return price
+    raise RuntimeError("dwo: no gold futures row")
+
+
 def _spot_gold_api() -> float:
     data = _get_json("https://api.gold-api.com/price/XAU")
     price = float(data["price"])
@@ -142,6 +226,12 @@ def _spot_goldprice_dev() -> float:
 
 
 SPOT_FETCHERS: list[tuple[str, Callable[[], float]]] = [
+    # 国内源优先（通常比 Yahoo/gold-api 更稳）
+    ("新浪 hf_XAU", _spot_sina),
+    ("腾讯 hf_XAU", _spot_tencent),
+    ("东方财富 XAU", _spot_eastmoney),
+    ("小渡 openapi", _spot_dwo),
+    # 国外备用
     ("gold-api.com", _spot_gold_api),
     ("xaus.com", _spot_xaus),
     ("goldprice.dev", _spot_goldprice_dev),
@@ -178,6 +268,35 @@ def resolve_spot(manual: float | None = None) -> tuple[float, str]:
         save_spot_cache(manual, "MT5手动")
         return manual, "MT5手动"
     return fetch_spot()
+
+
+def fetch_em_bars(klt: int = 15, days: int = 5) -> list[Bar]:
+    """M15/M5 bars from Eastmoney (122.XAU). Works on many CN networks."""
+    beg = (datetime.now(BEIJING) - timedelta(days=days)).strftime("%Y%m%d")
+    end = datetime.now(BEIJING).strftime("%Y%m%d")
+    path = (
+        "/api/qt/stock/kline/get?secid=122.XAU"
+        f"&fields1=f1&fields2=f51,f52,f53,f54,f55&fqt=0&klt={klt}&beg={beg}&end={end}"
+    )
+    hosts = ("push2his.eastmoney.com", "48.push2his.eastmoney.com", "push2hisdelay.eastmoney.com")
+    last_err: Exception | None = None
+    for host in hosts:
+        try:
+            data = _get_json(f"https://{host}{path}", extra_headers=EM_REFERER, timeout=10)
+            lines = (data.get("data") or {}).get("klines") or []
+            bars: list[Bar] = []
+            for line in lines:
+                parts = line.split(",")
+                if len(parts) < 5:
+                    continue
+                ts = datetime.strptime(parts[0], "%Y-%m-%d %H:%M").replace(tzinfo=BEIJING)
+                o, c, h, l = (_em_scale(float(x)) for x in parts[1:5])
+                bars.append(Bar(ts=ts, open=o, high=h, low=l, close=c))
+            if len(bars) >= 5:
+                return bars
+        except Exception as exc:
+            last_err = exc
+    raise RuntimeError(f"eastmoney kline: {last_err}") from last_err
 
 
 def fetch_gc_bars(interval: str = "15m", range_: str = "5d") -> tuple[list[Bar], float]:

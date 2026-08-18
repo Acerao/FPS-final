@@ -377,15 +377,164 @@ def buy_hold(bars: list) -> None:
     print("这是单边牛市背景：盒子均值回归（A空）会更难，顺势回踩（B多）相对容易。")
 
 
+def _fit_line_bt(points: list[tuple[int, float]]) -> tuple[float, float] | None:
+    if len(points) < 2:
+        return None
+    n = float(len(points))
+    sx = sum(p[0] for p in points)
+    sy = sum(p[1] for p in points)
+    sxx = sum(p[0] * p[0] for p in points)
+    sxy = sum(p[0] * p[1] for p in points)
+    den = n * sxx - sx * sx
+    if abs(den) < 1e-9:
+        return None
+    a = (n * sxy - sx * sy) / den
+    b = (sy - a * sx) / n
+    return a, b
+
+
+def _swing_hi(bars, i):
+    if i < 2 or i >= len(bars) - 2:
+        return False
+    return bars[i].high >= bars[i-1].high and bars[i].high >= bars[i+1].high
+
+
+def _swing_lo(bars, i):
+    if i < 2 or i >= len(bars) - 2:
+        return False
+    return bars[i].low <= bars[i-1].low and bars[i].low <= bars[i+1].low
+
+
+def simulate_lines(bars: list, lot: float = 0.05) -> list[Trade]:
+    """画线模式回测：用滚动窗口拟合压力/支撑线，破线后回踩入场。"""
+    lot = clamp_lot(lot)
+    tp_usd = 18.0
+    window = 60
+    trades: list[Trade] = []
+    open_tr = None
+    day_trade_count: dict = defaultdict(int)
+    day_loss_count: dict = defaultdict(int)
+    day_pnl: dict[object, float] = defaultdict(float)
+
+    for idx in range(window, len(bars)):
+        b = bars[idx]
+        t = b.ts.astimezone(BEIJING).time()
+        day = session_date(b.ts)
+
+        if day_trade_count[day] >= MAX_DAY_TRADES or day_loss_count[day] >= MAX_DAY_LOSSES:
+            if open_tr and (t >= FLAT_END and t < ASIA_START):
+                side, entry, sl, tp, ets, mfe_max, be = open_tr
+                trades.append(Trade(day, "LINES", side, entry, sl, tp, ets, b.ts, b.close, "日限平", "lines", lot))
+                open_tr = None
+            continue
+        if day_pnl[day] <= -MAX_DAY_LOSS_USD:
+            if open_tr:
+                side, entry, sl, tp, ets, mfe_max, be = open_tr
+                trades.append(Trade(day, "LINES", side, entry, sl, tp, ets, b.ts, b.close, "日损平", "lines", lot))
+                open_tr = None
+            continue
+
+        if open_tr:
+            side, entry, sl, tp, ets, mfe_max, be = open_tr
+            mfe_max = max(mfe_max, mfe(b, side, entry))
+            if mfe_max >= BE_USD:
+                be = entry
+            if t >= FLAT_END and t < ASIA_START:
+                tr = Trade(day, "LINES", side, entry, sl, tp, ets, b.ts, b.open, "01:45平", "lines", lot)
+                trades.append(tr)
+                day_pnl[day] += tr.pnl_account
+                open_tr = None
+                continue
+            hit_result = exit_open(b, side, sl, tp, be)
+            if hit_result:
+                px, why = hit_result
+                tr = Trade(day, "LINES", side, entry, sl, tp, ets, b.ts, px, why, "lines", lot)
+                trades.append(tr)
+                day_pnl[day] += tr.pnl_account
+                day_trade_count[day] += 1
+                if tr.pnl_usd_price < 0:
+                    day_loss_count[day] += 1
+                open_tr = None
+            else:
+                open_tr = (side, entry, sl, tp, ets, mfe_max, be)
+            continue
+
+        if not in_entry(t):
+            continue
+
+        chunk = bars[idx - window:idx]
+        hi_pts = [(i, chunk[i].high) for i in range(2, len(chunk) - 2) if _swing_hi(chunk, i)]
+        lo_pts = [(i, chunk[i].low) for i in range(2, len(chunk) - 2) if _swing_lo(chunk, i)]
+        up_fit = _fit_line_bt(hi_pts[-6:])
+        dn_fit = _fit_line_bt(lo_pts[-6:])
+        if not up_fit or not dn_fit:
+            continue
+        last_x = len(chunk) - 1
+        up_now = up_fit[0] * last_x + up_fit[1]
+        dn_now = dn_fit[0] * last_x + dn_fit[1]
+        prev_x = last_x - 1
+        up_prev = up_fit[0] * prev_x + up_fit[1]
+        dn_prev = dn_fit[0] * prev_x + dn_fit[1]
+        pad = max(1.0, (up_now - dn_now) * 0.08)
+        close = b.close
+        prev_close = bars[idx - 1].close
+
+        break_up = close > up_now + pad and prev_close <= up_prev + pad
+        break_down = close < dn_now - pad and prev_close >= dn_prev - pad
+
+        if break_up:
+            entry = up_now
+            if abs(close - entry) <= 3.0:
+                sl = entry - SL_USD
+                tp = entry + tp_usd
+                open_tr = ("long", entry, sl, tp, b.ts, mfe(b, "long", entry), None)
+        elif break_down:
+            entry = dn_now
+            if abs(close - entry) <= 3.0:
+                sl = entry + SL_USD
+                tp = entry - tp_usd
+                open_tr = ("short", entry, sl, tp, b.ts, mfe(b, "short", entry), None)
+
+    if open_tr:
+        side, entry, sl, tp, ets, mfe_max, be = open_tr
+        last = bars[-1]
+        trades.append(Trade(session_date(last.ts), "LINES", side, entry, sl, tp, ets, last.ts, last.close, "数据结束平", "lines", lot))
+    return trades
+
+
 def run() -> None:
     bars, _ = fetch_gc_bars("1h", "730d")
     buy_hold(bars)
     classic = simulate(bars, "classic", 0.02)
     hwr = simulate(bars, "high_winrate", 0.02)
     sprint = simulate(bars, "sprint", 0.05)
+    lines = simulate_lines(bars, 0.05)
     summarize("原版盒子 classic  SL15/TP12  0.02手", classic, bars)
     summarize("高胜率版 hwr  SL15/TP10  0.02手  要确认K", hwr, bars)
     summarize("冲刺版 sprint  只做B  SL15/TP18  0.05手  要确认K", sprint, bars)
+    summarize("画线模式 lines  破线回踩  SL15/TP18  0.05手", lines, bars)
+
+    print("\n\n========== 五个策略胜率对比 ==========")
+    all_runs = [
+        ("asia_box", classic),
+        ("asia_box_hwr", hwr),
+        ("asia_box_sprint", sprint),
+        ("asia_box_lines", lines),
+    ]
+    print(f"{'策略':<22} {'笔数':>5} {'含平胜率':>8} {'剔平胜率':>8} {'净利':>8} {'最大回撤':>8}")
+    for name, ts in all_runs:
+        n = len(ts)
+        w = sum(1 for t in ts if t.win)
+        l = sum(1 for t in ts if not t.win and abs(t.pnl_usd_price) > 0.05)
+        dec = w + l
+        wr = 100 * w / n if n else 0
+        wr_d = 100 * w / dec if dec else 0
+        acc = sum(t.pnl_account for t in ts)
+        eq = 0.0; pk = 0.0; dd = 0.0
+        for t in ts:
+            eq += t.pnl_account; pk = max(pk, eq); dd = min(dd, eq - pk)
+        print(f"{name:<22} {n:>5} {wr:>7.1f}% {wr_d:>7.1f}% {acc:>+7.0f}$ {dd:>+7.0f}$")
+
     print("\n注意:")
     print("- 这是 COMEX 黄金期货 H1，不是 MT5 XAUUSD M15，点差/滑点/大数据都没扣。")
     print("- 确认K在 H1 上比 M15 更稀，高胜率版笔数会偏少。")

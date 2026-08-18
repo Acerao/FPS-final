@@ -94,6 +94,7 @@ class App:
         self.lot_var = tk.StringVar(value=str(self.cfg.get("lot", "0.02")))
         self.grid_side_var = tk.StringVar(value=self.cfg.get("grid_side", "long"))
         self.grid_info_var = tk.StringVar(value="")
+        self._low_space_mode = False
 
         # 用于“小窗极简显示”的组件引用
         self.price_title_label = tk.Label(self.root, text="现货黄金", fg=muted, bg="#111318", font=font_ui)
@@ -391,11 +392,15 @@ class App:
         pad_in_y = max(4, int(10 * scale))
         pad_out_x = max(8, int(16 * scale))
         pad_out_y = max(2, int(6 * scale))
+        low_space = scale < 0.72
 
         # 价格/标题
         self.price_label.configure(font=("Microsoft YaHei UI", price_big, "bold"))
         self.tick_label.configure(font=("Microsoft YaHei UI", tick_size))
         self.mode_label.configure(font=("Microsoft YaHei UI", mode_size, "bold"))
+        self.price_title_label.configure(font=("Microsoft YaHei UI", ui_size))
+        self.price_title_label.pack_configure(pady=(max(4, int(12 * scale)), 0))
+        self.mode_label.pack_configure(pady=max(2, int(4 * scale)))
         self.ind_label.configure(
             wraplength=wrap,
             font=("Microsoft YaHei UI", ui_size),
@@ -419,9 +424,29 @@ class App:
         self.msg_label.pack_configure(padx=pad_out_x, pady=pad_out_y)
 
         # Canvas 高度（宽由 pack fill="x" 控制）
-        canvas_h = max(80, int(230 * scale))
+        if low_space:
+            canvas_h = max(52, int(120 * scale))
+        else:
+            canvas_h = max(80, int(230 * scale))
         self.chart.configure(height=canvas_h)
         self.chart.pack_configure(padx=pad_out_x, pady=(max(1, int(2 * scale)), pad_out_y))
+
+        # 下方操作区 padding 也跟着缩，减少被截断概率
+        self.strat_frame.pack_configure(padx=pad_out_x, pady=(max(2, int(8 * scale)), 0))
+        self.form_frame.pack_configure(padx=pad_out_x)
+        self.form2_frame.pack_configure(padx=pad_out_x, pady=(max(1, int(4 * scale)), 0))
+        self.grid_frame.pack_configure(padx=pad_out_x, pady=(max(1, int(6 * scale)), 0))
+        self.opts_frame.pack_configure(padx=pad_out_x, pady=max(2, int(8 * scale)))
+
+        # 窗口偏矮时，先隐藏底部日志/状态行，优先保留策略控件可见
+        if low_space and not self._low_space_mode:
+            self.status_label.pack_forget()
+            self.log.pack_forget()
+            self._low_space_mode = True
+        elif not low_space and self._low_space_mode:
+            self.status_label.pack(side="bottom", pady=6)
+            self.log.pack(fill="both", expand=True, padx=16, pady=(0, 10))
+            self._low_space_mode = False
 
         # 底部日志：偏小高度会挤，适当缩短；极端情况由 compact mode 处理
         try:

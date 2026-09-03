@@ -383,10 +383,39 @@ def run_selftest(popup: bool = False) -> int:
             grid=None,
             m15_bars=m15_bars,
             lot=0.02,
+            line_tf="M15",
         )
         if dash.signal.message and ("画线" in dash.signal.message or "高胜率" in dash.signal.message or dash.signal.key):
-            print("[OK] 双策略 build_dashboard 可用")
-            ok += 1
+            if "画线（M15" in dash.indicators_text or "画线/M15" in dash.signal.message or "M15" in dash.indicators_text:
+                print("[OK] 双策略默认画线周期 M15")
+                ok += 1
+            else:
+                print(f"[FAIL] 双策略应默认 M15，得到: {dash.indicators_text}")
+                fail += 1
+            dash_h1 = build_dashboard(
+                last_close,
+                box,
+                "测试",
+                AdxState(18, 20, 18),
+                33.0,
+                last_close,
+                news=fake_news,
+                now=noon,
+                bar_src="TEST",
+                bar_note="",
+                adx_tf="M15",
+                strategy="asia_box_dual_lines_hwr",
+                grid=None,
+                m15_bars=m15_bars,
+                lot=0.02,
+                line_tf="H1",
+            )
+            if "H1" in dash_h1.indicators_text:
+                print("[OK] 双策略可选手动切 H1")
+                ok += 1
+            else:
+                print(f"[FAIL] 双策略 line_tf=H1 未生效: {dash_h1.indicators_text}")
+                fail += 1
         else:
             print("[FAIL] 双策略 indicators_text/signal 异常")
             fail += 1

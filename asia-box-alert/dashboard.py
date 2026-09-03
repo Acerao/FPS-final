@@ -540,6 +540,36 @@ def _regime(box: Box | None, adx: AdxState | None, price: float, m15_close: floa
     return "模糊", f"ADX {adx.adx:.1f} 在 22–28"
 
 
+def _line_bars_for_tf(m15_bars: list[object] | None, line_tf: str) -> tuple[list[object], str]:
+    """按可选项准备画线用 K：M15 直接用；H1 由 M15 聚合。"""
+    tf = (line_tf or "M15").upper()
+    if tf == "H1":
+        raw = m15_bars[-240:] if m15_bars else []
+        return aggregate_bars(raw, 60), "H1"
+    bars = m15_bars[-120:] if m15_bars else []
+    return bars, "M15"
+
+
+def _line_signal_from_bars(
+    price: float,
+    line_bars: list[object],
+    lot: float,
+    tf: str,
+) -> tuple[Signal, dict | None]:
+    if len(line_bars) < MIN_LINE_BARS:
+        return (
+            Signal(
+                "line_wait",
+                "LINES",
+                "画线数据不足",
+                f"近期 {tf} 仅 {len(line_bars)} 根，至少 {MIN_LINE_BARS} 根即可用近期画线。",
+                False,
+            ),
+            None,
+        )
+    return _line_mode_signal(price, line_bars, clamp_lot(lot), tf=tf)
+
+
 def build_dashboard(
     price: float,
     box: Box | None,
@@ -556,6 +586,7 @@ def build_dashboard(
     grid: GridState | None = None,
     m15_bars: list[object] | None = None,
     lot: float | None = None,
+    line_tf: str = "M15",
 ) -> Dashboard:
     now = beijing_now(now)
     news = news or get_news_status(now)
@@ -564,58 +595,27 @@ def build_dashboard(
     regime, broken = _regime(box, adx, price, m15_close)
     grid = grid or GridState()
     line_close: float | None = None
+    effective_line_tf = "M15"
     if strategy == "scale_grid":
         signal = evaluate_grid(price, grid, adx, now, news)
         line_overlay = None
     elif strategy == "asia_box_lines":
-        line_close = m15_close
-        line_bars = m15_bars[-120:] if m15_bars else []
-        if len(line_bars) < MIN_LINE_BARS:
-            signal = Signal(
-                "line_wait",
-                "LINES",
-                "画线数据不足",
-                f"近期K线仅 {len(line_bars)} 根，至少 {MIN_LINE_BARS} 根即可用近期画线。",
-                False,
-            )
-            line_overlay = None
-        else:
-            signal, line_overlay = _line_mode_signal(price, line_bars, clamp_lot(lot), tf="M15")
+        line_bars, effective_line_tf = _line_bars_for_tf(m15_bars, line_tf)
+        if line_bars:
+            line_close = float(getattr(line_bars[-1], "close", m15_close or 0)) or m15_close
+        signal, line_overlay = _line_signal_from_bars(price, line_bars, clamp_lot(lot), effective_line_tf)
     elif strategy == "asia_box_lines_h1":
-        # 用近期 H1（由现有 M15 聚合）画线，不必硬等 20 根
-        raw = m15_bars[-240:] if m15_bars else []
-        line_bars = aggregate_bars(raw, 60)
-        if len(line_bars) < MIN_LINE_BARS:
-            signal = Signal(
-                "line_wait",
-                "LINES",
-                "画线数据不足",
-                f"近期 H1 仅 {len(line_bars)} 根，至少 {MIN_LINE_BARS} 根即可用近期画线（不必等 20 根）。",
-                False,
-            )
-            line_overlay = None
-        else:
-            line_close = float(getattr(line_bars[-1], "close", None))
-            signal, line_overlay = _line_mode_signal(price, line_bars, clamp_lot(lot), tf="H1")
+        # 兼容旧入口：强制 H1；日常更推荐用 asia_box_lines + 画线周期可选项
+        line_bars, effective_line_tf = _line_bars_for_tf(m15_bars, "H1")
+        if line_bars:
+            line_close = float(getattr(line_bars[-1], "close", None) or 0) or None
+        signal, line_overlay = _line_signal_from_bars(price, line_bars, clamp_lot(lot), "H1")
     elif strategy == "asia_box_dual_lines_hwr":
         used_lot = clamp_lot(lot)
-
-        # 1) 画线腿：H1（更贴近大熊大级别，避免 M15 几分钟多空乱翻）
-        raw = m15_bars[-240:] if m15_bars else []
-        line_bars = aggregate_bars(raw, 60)
+        line_bars, effective_line_tf = _line_bars_for_tf(m15_bars, line_tf)
         if line_bars:
-            line_close = float(getattr(line_bars[-1], "close", None))
-        if len(line_bars) < MIN_LINE_BARS:
-            line_sig = Signal(
-                "line_wait",
-                "LINES",
-                "画线数据不足",
-                f"近期 H1 仅 {len(line_bars)} 根，至少 {MIN_LINE_BARS} 根即可用近期画线。",
-                False,
-            )
-            line_overlay = None
-        else:
-            line_sig, line_overlay = _line_mode_signal(price, line_bars, used_lot, tf="H1")
+            line_close = float(getattr(line_bars[-1], "close", m15_close or 0)) or m15_close
+        line_sig, line_overlay = _line_signal_from_bars(price, line_bars, used_lot, effective_line_tf)
 
         # 2) 高胜率（HWR）
         profile = _profile_for("asia_box_hwr")
@@ -641,7 +641,7 @@ def build_dashboard(
                 hwr_sig.key,
                 _strategy_label(strategy),
                 "双触发：画线 + 高胜率",
-                f"[画线] {line_sig.title}\n{line_sig.message}\n\n[高胜率] {hwr_sig.title}\n{hwr_sig.message}",
+                f"[画线/{effective_line_tf}] {line_sig.title}\n{line_sig.message}\n\n[高胜率] {hwr_sig.title}\n{hwr_sig.message}",
                 True,
             )
         elif hwr_is_entry:
@@ -649,7 +649,7 @@ def build_dashboard(
                 hwr_sig.key,
                 hwr_sig.mode,
                 f"高胜率：{hwr_sig.title}",
-                f"[高胜率] {hwr_sig.message}\n\n[画线观察] {line_sig.title}。两套都在跑，先按高胜率限价，不成交不要追。",
+                f"[高胜率] {hwr_sig.message}\n\n[画线/{effective_line_tf}观察] {line_sig.title}。两套都在跑，先按高胜率限价，不成交不要追。",
                 True,
             )
         elif line_is_entry:
@@ -657,7 +657,7 @@ def build_dashboard(
                 line_sig.key,
                 line_sig.mode,
                 f"画线：{line_sig.title}",
-                f"[画线] {line_sig.message}\n\n[高胜率不同意见] {hwr_sig.title}。{hwr_sig.message}\n"
+                f"[画线/{effective_line_tf}] {line_sig.message}\n\n[高胜率不同意见] {hwr_sig.title}。{hwr_sig.message}\n"
                 f"高胜率这时不做。画线那笔也是限价回踩，现价没回到入场位就不要市价追。",
                 True,
             )
@@ -667,7 +667,7 @@ def build_dashboard(
                 "dual_wait",
                 _strategy_label(strategy),
                 "双策略：等待入场条件",
-                f"[画线] {line_sig.title}\n{line_sig.message}\n\n[高胜率] {hwr_sig.title}\n{hwr_sig.message}",
+                f"[画线/{effective_line_tf}] {line_sig.title}\n{line_sig.message}\n\n[高胜率] {hwr_sig.title}\n{hwr_sig.message}",
                 False,
             )
     else:
@@ -743,12 +743,11 @@ def build_dashboard(
     elif strategy == "asia_box_lines" or strategy == "asia_box_lines_h1":
         used_lot = clamp_lot(lot)
         sl_risk = risk_dollars(used_lot, SL_USD)
-        tf_txt = "M15" if strategy == "asia_box_lines" else "H1"
         indicators_text = (
             f"策略 {_strategy_label(strategy)}  |  时段 {session}  |  位置 {zone}\n"
-            f"手数 {used_lot}  单笔止损约 ${sl_risk:.0f}  |  原理：2点连线+破位收盘+等回踩\n"
+            f"手数 {used_lot}  单笔止损约 ${sl_risk:.0f}  |  画线周期 {effective_line_tf}  |  2点连线+破位收盘+等回踩\n"
             f"{kline_line}\n"
-            f"ADX {adx_txt}  |  RSI(M15) {rsi_txt}  |  {tf_txt}收盘 {line_txt}\n"
+            f"ADX {adx_txt}  |  RSI(M15) {rsi_txt}  |  {effective_line_tf}收盘 {line_txt}\n"
             f"建议 {'✓ 可提醒' if entry_ok else '✗ 等待'}"
         )
     elif strategy == "asia_box_dual_lines_hwr":
@@ -758,10 +757,10 @@ def build_dashboard(
             f"策略 {_strategy_label(strategy)}  |  时段 {session}  |  位置 {zone}\n"
             f"手数 {used_lot}  单笔止损约 ${sl_risk:.0f}\n"
             f"同时运行：\n"
-            f"- 画线（H1，大熊式：2根收盘破+方向锁定+等回踩）\n"
+            f"- 画线（{effective_line_tf}，可选项；大熊式：2根收盘破+方向锁定+等回踩）\n"
             f"- 高胜率（M15 亚盘盒子）\n"
             f"{kline_line}\n"
-            f"ADX {adx_txt}  |  RSI(M15) {rsi_txt}  |  H1收盘 {line_txt}  |  M15 {m15_txt}\n"
+            f"ADX {adx_txt}  |  RSI(M15) {rsi_txt}  |  画线{effective_line_tf} {line_txt}  |  M15 {m15_txt}\n"
             f"建议 {'✓ 可提醒' if entry_ok else '✗ 等待'}"
         )
     else:

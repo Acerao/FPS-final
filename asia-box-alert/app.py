@@ -95,6 +95,8 @@ class App:
         self.topmost_var = tk.BooleanVar(value=bool(self.cfg.get("topmost", False)))
         self.strategy_var = tk.StringVar(value=self.cfg.get("strategy", "asia_box"))
         self.lot_var = tk.StringVar(value=str(self.cfg.get("lot", "0.02")))
+        _ltf = str(self.cfg.get("line_tf", "M15")).upper()
+        self.line_tf_var = tk.StringVar(value="H1" if _ltf == "H1" else "M15")
         self.grid_side_var = tk.StringVar(value=self.cfg.get("grid_side", "long"))
         self.grid_info_var = tk.StringVar(value="")
         self._low_space_mode = False
@@ -189,9 +191,18 @@ class App:
             command=lambda _: self.on_lot_change(),
         )
         self.lot_box.pack(side="left", padx=6)
+        tk.Label(strat, text="画线周期", fg=muted, bg="#111318").pack(side="left", padx=(12, 0))
+        self.line_tf_box = tk.OptionMenu(
+            strat,
+            self.line_tf_var,
+            "M15",
+            "H1",
+            command=lambda _: self.on_line_tf_change(),
+        )
+        self.line_tf_box.pack(side="left", padx=6)
         tk.Label(
             strat,
-            text="高胜率=确认K  冲刺=只做B+加大手  画线=K线+趋势线",
+            text="高胜率=确认K  冲刺=只做B  画线周期默认M15可改H1",
             fg=muted,
             bg="#111318",
             font=("Microsoft YaHei UI", 8),
@@ -679,6 +690,13 @@ class App:
 
         return clamp_lot(self.lot_var.get() or self.cfg.get("lot"))
 
+    def _current_line_tf(self) -> str:
+        """画线/双策略用的周期可选项；旧入口 asia_box_lines_h1 仍强制 H1。"""
+        if (self.strategy_var.get() or "") == "asia_box_lines_h1":
+            return "H1"
+        tf = str(self.line_tf_var.get() or self.cfg.get("line_tf") or "M15").upper()
+        return "H1" if tf == "H1" else "M15"
+
     def on_lot_change(self) -> None:
         lot = self._current_lot()
         self.lot_var.set(f"{lot:.2f}")
@@ -690,18 +708,30 @@ class App:
         if self.last_price is not None:
             self._render(self.last_price, self.cached_price_source or "现货", beijing_now())
 
+    def on_line_tf_change(self) -> None:
+        tf = self._current_line_tf()
+        self.line_tf_var.set(tf)
+        self.cfg["line_tf"] = tf
+        save_config(self.cfg)
+        self.append_log(f"画线周期改为 {tf}（仅影响画线/双策略画线腿）")
+        if self.last_price is not None:
+            self._render(self.last_price, self.cached_price_source or "现货", beijing_now())
+
     def on_strategy_change(self) -> None:
         self.cfg["strategy"] = self.strategy_var.get()
         if self.cfg["strategy"] == "asia_box_sprint" and self._current_lot() <= 0.021:
             self.lot_var.set("0.05")
             self.cfg["lot"] = 0.05
             self.append_log("冲刺版默认手数改成 0.05（可再手动改）")
+        if self.cfg["strategy"] == "asia_box_lines_h1":
+            self.line_tf_var.set("H1")
+            self.cfg["line_tf"] = "H1"
         save_config(self.cfg)
         labels = {
             "asia_box": "亚盘盒子",
             "asia_box_hwr": "亚盘盒子·高胜率",
             "asia_box_sprint": "亚盘盒子·冲刺$1k",
-            "asia_box_lines": "画线策略·H8风格",
+            "asia_box_lines": "画线策略·大熊式",
             "asia_box_lines_h1": "画线策略·小时级",
             "asia_box_dual_lines_hwr": "双策略·画线+高胜率",
             "scale_grid": "等距网格",
@@ -779,6 +809,7 @@ class App:
             self._grid_state(),
             self.cached_bars,
             self._current_lot(),
+            line_tf=self._current_line_tf(),
         )
 
         delta = ""
@@ -859,13 +890,13 @@ class App:
             )
             return
 
-        # asia_box_lines: M15
-        # asia_box_lines_h1 / dual: H1（更贴近大熊大级别，减少几分钟多空乱翻）
+        # asia_box_lines / dual：跟随「画线周期」可选项（默认 M15）
+        # asia_box_lines_h1：强制 H1
         base_m15 = self.cached_bars[-240:] if self.cached_bars else []
-        if strategy in {"asia_box_lines_h1", "asia_box_dual_lines_hwr"}:
+        if self._current_line_tf() == "H1":
             bars = aggregate_bars(base_m15, 60)
         else:
-            bars = base_m15
+            bars = base_m15[-120:] if base_m15 else []
         ov = dash.line_overlay or {}
         n_fit = ov.get("n_bars")
         if isinstance(n_fit, int) and 2 <= n_fit <= len(bars):
@@ -1219,6 +1250,7 @@ def print_once() -> None:
         None,
         pack.bars,
         cfg.get("lot", 0.02),
+        line_tf=str(cfg.get("line_tf", "M15")),
     )
     print(dash.indicators_text)
     print(dash.news.summary)

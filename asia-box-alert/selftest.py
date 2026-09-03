@@ -99,11 +99,20 @@ def run_selftest(popup: bool = False) -> int:
         fail += 1
 
     print("\n=== 画线反抽判定自测 ===")
-    from dashboard import _line_mode_signal, _pullback_state, _pullback_clock
+    from dashboard import _line_mode_signal, _pullback_clock, _pullback_bucket
 
-    _pullback_state.clear()
-    _pullback_state.update(
-        {"side": "short", "entry": 4391.2, "sl": 4404.0, "tp": 4375.9, "reason": "test", "since": 0}
+    pb = _pullback_bucket("M15")
+    pb.clear()
+    pb.update(
+        {
+            "side": "short",
+            "entry": 4391.2,
+            "sl": 4404.0,
+            "tp": 4375.9,
+            "reason": "test",
+            "since": 0,
+            "extended": False,
+        }
     )
     _pullback_clock[0] = 1
     fake_bars = []
@@ -116,7 +125,42 @@ def run_selftest(popup: bool = False) -> int:
     else:
         print(f"[FAIL] 期望等反抽，得到 {sig.key} {sig.title} {sig.message}")
         fail += 1
-    _pullback_state.clear()
+
+    # 锁定后多次刷新也不应翻向；未走出第一波也不触发反抽
+    locked_side = pb.get("side")
+    for _ in range(40):
+        sig2, _ = _line_mode_signal(4388.93, fake_bars, 0.02)
+    if locked_side == "short" and pb.get("side") == "short" and sig2.key == "line_wait":
+        print("[OK] 锁定后多次刷新不翻向、不误触发反抽")
+        ok += 1
+    else:
+        print(
+            f"[FAIL] 锁定应保持做空等待，得到 side={pb.get('side')} "
+            f"key={sig2.key} title={sig2.title}"
+        )
+        fail += 1
+
+    # 走出第一波后再回到线上才触发
+    pb.clear()
+    pb.update(
+        {
+            "side": "short",
+            "entry": 4391.2,
+            "sl": 4404.0,
+            "tp": 4375.9,
+            "reason": "test",
+            "since": 0,
+            "extended": True,
+        }
+    )
+    sig3, _ = _line_mode_signal(4391.0, fake_bars, 0.02)
+    if sig3.key == "line_short_call":
+        print("[OK] 走出第一波后反抽到位才提醒做空")
+        ok += 1
+    else:
+        print(f"[FAIL] 期望反抽到位，得到 {sig3.key} {sig3.title}")
+        fail += 1
+    pb.clear()
 
     print("\n=== 大数据禁做自测 ===")
     fake_news = NewsStatus(

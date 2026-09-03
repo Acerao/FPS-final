@@ -144,9 +144,46 @@ def _fit_line(points: list[tuple[int, float]]) -> tuple[float, float] | None:
     return _two_pt_line(points[0], points[-1])
 
 
-# 等回踩状态（进程内持久，跨调用）
-_pullback_state: dict = {}
-_pullback_clock = [0]
+# 等回踩状态（按周期分桶，进程内持久）
+# 注意：绝不能按 UI 刷新次数计时，否则几分钟就过期、多空乱翻。
+_pullback_by_tf: dict[str, dict] = {}
+_last_closed_ts_by_tf: dict[str, object] = {}
+_LINE_LOCK_BARS = 16  # 锁定方向：M15≈4小时 / H1≈16小时
+_BREAK_PAD = 0.8  # 收盘要明确越过线，过滤影线假破
+_EXTEND_PAD = 2.0  # 破位后至少离开线一段，才算有“第一波”，才允许回踩
+
+
+def _pullback_bucket(tf: str) -> dict:
+    key = (tf or "M15").upper()
+    if key not in _pullback_by_tf:
+        _pullback_by_tf[key] = {}
+    return _pullback_by_tf[key]
+
+
+# 兼容旧自测：默认指 M15 桶
+_pullback_state = _pullback_bucket("M15")
+_pullback_clock = [0]  # 仅兼容自测读写；真实超时看 since_ts + K 根数
+
+
+def _bar_ts(bar: object, fallback_i: int):
+    ts = getattr(bar, "ts", None)
+    return ts if ts is not None else fallback_i
+
+
+def _closed_bars_since(bars: list[object], closed_i: int, since_ts) -> int:
+    """从锁定时刻起，已经收盘过几根（不含锁定当根）。"""
+    if since_ts is None:
+        return 0
+    n = 0
+    for i in range(0, closed_i + 1):
+        ts = _bar_ts(bars[i], i)
+        try:
+            if ts > since_ts:
+                n += 1
+        except TypeError:
+            if i > int(since_ts):
+                n += 1
+    return n
 
 
 def _line_sl_tp_from_levels(
@@ -206,18 +243,31 @@ def _line_sl_tp_from_levels(
     return sl, tp, reason
 
 
-def _line_mode_signal(price: float, bars: list[object], lot: float) -> tuple[Signal, dict]:
+def _line_mode_signal(
+    price: float,
+    bars: list[object],
+    lot: float,
+    tf: str = "M15",
+) -> tuple[Signal, dict]:
     """
-    大熊式信号（修正正确版）：
-    1. 只连最近2个明显高/低点构建下降通道（手画线风格）
-    2. 收盘突破压力线（不是影线）→ 进入等回踩状态
-    3. 价格回到旧压力线附近±$3 → 触发入场提醒（限价或市价）
-    4. 超过20根不回踩 → 放弃
+    大熊式信号（稳住版，对齐 PLAYBOOK_LINES）：
+    1. 只连最近2个明显高/低点（下降通道）
+    2. 至少 2 根收盘越过线才算真突破（影线不算）
+    3. 破位后锁定单方向，等回踩/反抽；中途不反向翻多空
+    4. 必须先离开线一段（第一波），才允许回踩触发
+    5. 回抽失败（收盘重新穿越旧线）或超时（按K根，不按刷新）→ 作废
     """
+    tf_key = (tf or "M15").upper()
     n = len(bars)
-    last_x = n - 1
-    close = float(getattr(bars[-1], "close"))
-    prev_close = float(getattr(bars[-2], "close")) if n >= 2 else close
+    # 用已收盘的两根判突破，当前形成中的最后一根只用于现价距离
+    if n >= 3:
+        closed_i, prev_i = n - 2, n - 3
+    else:
+        closed_i, prev_i = n - 1, max(0, n - 2)
+    close = float(getattr(bars[closed_i], "close"))
+    prev_close = float(getattr(bars[prev_i], "close"))
+    live = float(price) if price else float(getattr(bars[-1], "close"))
+    closed_ts = _bar_ts(bars[closed_i], closed_i)
 
     hi_pts = _major_swings(bars, "high")
     lo_pts = _major_swings(bars, "low")
@@ -226,84 +276,169 @@ def _line_mode_signal(price: float, bars: list[object], lot: float) -> tuple[Sig
     dn_line = _two_pt_line(lo_pts[-2], lo_pts[-1]) if len(lo_pts) >= 2 else None
     if up_line is None:
         hi_i = max(range(n), key=lambda i: float(getattr(bars[i], "high")))
-        hi_j = n - 1
+        hi_j = closed_i
         if hi_i == hi_j and n >= 3:
-            hi_i = n - 3
+            hi_i = max(0, closed_i - 3)
         up_line = _two_pt_line((hi_i, float(getattr(bars[hi_i], "high"))), (hi_j, float(getattr(bars[hi_j], "high"))))
     if dn_line is None:
         lo_i = min(range(n), key=lambda i: float(getattr(bars[i], "low")))
-        lo_j = n - 1
+        lo_j = closed_i
         if lo_i == lo_j and n >= 3:
-            lo_i = n - 3
+            lo_i = max(0, closed_i - 3)
         dn_line = _two_pt_line((lo_i, float(getattr(bars[lo_i], "low"))), (lo_j, float(getattr(bars[lo_j], "low"))))
 
-    up_now = _line_y(up_line, last_x, max(float(getattr(b, "high")) for b in bars[-20:]))
-    dn_now = _line_y(dn_line, last_x, min(float(getattr(b, "low")) for b in bars[-20:]))
-    up_prev = _line_y(up_line, last_x - 1, up_now)
-    dn_prev = _line_y(dn_line, last_x - 1, dn_now)
+    up_now = _line_y(up_line, closed_i, max(float(getattr(b, "high")) for b in bars[-20:]))
+    dn_now = _line_y(dn_line, closed_i, min(float(getattr(b, "low")) for b in bars[-20:]))
+    up_prev = _line_y(up_line, prev_i, up_now)
+    dn_prev = _line_y(dn_line, prev_i, dn_now)
 
     box_low = min(float(getattr(b, "low")) for b in bars[-24:])
     box_high = box_low + (max(float(getattr(b, "high")) for b in bars[-24:]) - box_low) * 0.35
 
-    # 只在下降通道时工作（高点在降）
+    # 下降通道：最近高点在降；低点也宜在降（更贴近大熊通道）
     descending = len(hi_pts) >= 2 and hi_pts[-1][1] < hi_pts[-2][1]
-    broke_up = descending and close > up_now and prev_close <= up_prev
-    broke_dn = descending and close < dn_now and prev_close >= dn_prev
+    lows_descend = len(lo_pts) < 2 or lo_pts[-1][1] <= lo_pts[-2][1] + 1.0
+    channel_ok = descending and lows_descend
 
-    # 更新等回踩状态
-    _pullback_clock[0] += 1
-    pb = _pullback_state
-    if broke_up:
-        calc = _line_sl_tp_from_levels("long", up_now, up_now, dn_now, box_low, box_high, hi_pts, lo_pts)
-        if calc:
-            sl, tp, reason = calc
-            pb.update({"side": "long", "entry": up_now, "sl": sl, "tp": tp, "reason": reason, "since": _pullback_clock[0]})
-    elif broke_dn:
-        calc = _line_sl_tp_from_levels("short", dn_now, up_now, dn_now, box_low, box_high, hi_pts, lo_pts)
-        if calc:
-            sl, tp, reason = calc
-            pb.update({"side": "short", "entry": dn_now, "sl": sl, "tp": tp, "reason": reason, "since": _pullback_clock[0]})
-    if pb.get("since") and _pullback_clock[0] - pb["since"] > 20:
+    # 真突破：连续两根收盘越过线（大熊：影线刺破不算）
+    broke_up = (
+        channel_ok
+        and close > up_now + _BREAK_PAD
+        and prev_close > up_prev + _BREAK_PAD
+    )
+    broke_dn = (
+        channel_ok
+        and close < dn_now - _BREAK_PAD
+        and prev_close < dn_prev - _BREAK_PAD
+    )
+
+    pb = _pullback_bucket(tf_key)
+    # 兼容自测：同步默认桶引用计数（不参与真实超时）
+    if _last_closed_ts_by_tf.get(tf_key) != closed_ts:
+        _last_closed_ts_by_tf[tf_key] = closed_ts
+        if tf_key == "M15":
+            _pullback_clock[0] += 1
+
+    # 失效：回抽失败 / 反向穿越旧线 → 清空；同一次评估不再立刻翻向
+    invalidated = False
+    if pb.get("side") == "short" and close > float(pb["entry"]) + 4.0:
         pb.clear()
+        invalidated = True
+    elif pb.get("side") == "long" and close < float(pb["entry"]) - 4.0:
+        pb.clear()
+        invalidated = True
+    elif pb.get("since_ts") is not None:
+        wait_bars = _closed_bars_since(bars, closed_i, pb["since_ts"])
+        if wait_bars > _LINE_LOCK_BARS:
+            pb.clear()
+            invalidated = True
+    elif pb.get("since") is not None and tf_key == "M15":
+        # 旧字段兜底（自测）
+        if _pullback_clock[0] - int(pb["since"]) > _LINE_LOCK_BARS:
+            pb.clear()
+            invalidated = True
+
+    # 未锁定时才接受新破位；已锁定绝不中途翻多空；刚失效当根不立刻开反向
+    if not pb.get("side") and not invalidated:
+        if broke_up:
+            calc = _line_sl_tp_from_levels("long", up_now, up_now, dn_now, box_low, box_high, hi_pts, lo_pts)
+            if calc:
+                sl, tp, reason = calc
+                pb.update(
+                    {
+                        "side": "long",
+                        "entry": round(up_now, 1),
+                        "sl": sl,
+                        "tp": tp,
+                        "reason": reason,
+                        "since_ts": closed_ts,
+                        "since": _pullback_clock[0],
+                        "extended": False,
+                        "tf": tf_key,
+                    }
+                )
+        elif broke_dn:
+            calc = _line_sl_tp_from_levels("short", dn_now, up_now, dn_now, box_low, box_high, hi_pts, lo_pts)
+            if calc:
+                sl, tp, reason = calc
+                pb.update(
+                    {
+                        "side": "short",
+                        "entry": round(dn_now, 1),
+                        "sl": sl,
+                        "tp": tp,
+                        "reason": reason,
+                        "since_ts": closed_ts,
+                        "since": _pullback_clock[0],
+                        "extended": False,
+                        "tf": tf_key,
+                    }
+                )
 
     plan: dict | None = None
     tol_pullback = 3.0
     tol_market = 1.5
 
     if pb.get("side"):
-        entry = pb["entry"]; sl = pb["sl"]; tp = pb["tp"]; pb_side = pb["side"]; reason = pb.get("reason", "")
-        wait_bars = _pullback_clock[0] - pb["since"]
-        # 大熊：必须等价格从破位一侧回到旧线上，不能把“还在破位延伸”当成反抽/回踩
+        entry = float(pb["entry"])
+        sl = float(pb["sl"])
+        tp = float(pb["tp"])
+        pb_side = pb["side"]
+        reason = pb.get("reason", "")
+        wait_bars = _closed_bars_since(bars, closed_i, pb.get("since_ts"))
+        # 必须先走出第一波，才允许回踩/反抽触发（大熊：不追第一波）
+        if pb_side == "long" and live >= entry + _EXTEND_PAD:
+            pb["extended"] = True
+        elif pb_side == "short" and live <= entry - _EXTEND_PAD:
+            pb["extended"] = True
+        extended = bool(pb.get("extended"))
+
         if pb_side == "long":
-            retest = (entry - tol_pullback) <= close <= (entry + 1.0)
+            near_line = (entry - tol_pullback) <= live <= (entry + 1.0)
         else:
-            retest = (entry - 1.0) <= close <= (entry + tol_pullback)
+            near_line = (entry - 1.0) <= live <= (entry + tol_pullback)
+        retest = extended and near_line
+
         if retest:
             if pb_side == "long":
-                diff = entry - close
-                market_ok = abs(close - entry) <= tol_market and close <= entry + 0.8
-                msg = (f"压力变支撑，价格回踩到 {entry:.1f}，现价 {close:.1f}，差 ${abs(close - entry):.1f}\n"
-                       + (f"可直接市价做多。SL {sl:.1f}，TP {tp:.1f}，手数 {lot:.2f}。"
-                          if market_ok else f"挂 Buy Limit {entry:.1f}，SL {sl:.1f}，TP {tp:.1f}，手数 {lot:.2f}。还没回到线上不要追。")
-                       + (f"\n{reason}" if reason else ""))
+                market_ok = abs(live - entry) <= tol_market and live <= entry + 0.8
+                msg = (
+                    f"压力变支撑，价格回踩到 {entry:.1f}，现价 {live:.1f}，差 ${abs(live - entry):.1f}\n"
+                    + (
+                        f"可直接市价做多。SL {sl:.1f}，TP {tp:.1f}，手数 {lot:.2f}。"
+                        if market_ok
+                        else f"挂 Buy Limit {entry:.1f}，SL {sl:.1f}，TP {tp:.1f}，手数 {lot:.2f}。还没回到线上不要追。"
+                    )
+                    + (f"\n{reason}" if reason else "")
+                )
                 sig = Signal("line_long_call", "LINES", "画线做多：回踩到位", msg, True)
                 bias = "偏多·回踩触发"
             else:
-                market_ok = abs(close - entry) <= tol_market and close >= entry - 0.8
-                msg = (f"支撑变压力，价格反抽到 {entry:.1f}，现价 {close:.1f}，差 ${abs(close - entry):.1f}\n"
-                       + (f"可直接市价做空。SL {sl:.1f}，TP {tp:.1f}，手数 {lot:.2f}。"
-                          if market_ok else f"挂 Sell Limit {entry:.1f}，SL {sl:.1f}，TP {tp:.1f}，手数 {lot:.2f}。还没反抽到线上不要追空。")
-                       + (f"\n{reason}" if reason else ""))
+                market_ok = abs(live - entry) <= tol_market and live >= entry - 0.8
+                msg = (
+                    f"支撑变压力，价格反抽到 {entry:.1f}，现价 {live:.1f}，差 ${abs(live - entry):.1f}\n"
+                    + (
+                        f"可直接市价做空。SL {sl:.1f}，TP {tp:.1f}，手数 {lot:.2f}。"
+                        if market_ok
+                        else f"挂 Sell Limit {entry:.1f}，SL {sl:.1f}，TP {tp:.1f}，手数 {lot:.2f}。还没反抽到线上不要追空。"
+                    )
+                    + (f"\n{reason}" if reason else "")
+                )
                 sig = Signal("line_short_call", "LINES", "画线做空：反抽到位", msg, True)
                 bias = "偏空·反抽触发"
             plan = {"side": pb_side, "entry": entry, "sl": sl, "tp": tp}
         else:
+            if not extended:
+                extra = f"先等第一波离开线至少 ${_EXTEND_PAD:.0f}，再等回到线上。"
+            else:
+                extra = f"已走出第一波，等回到 {entry:.1f}。"
             if pb_side == "long":
                 sig = Signal(
                     "line_wait",
                     "LINES",
-                    f"已破线，等回踩 {entry:.1f}",
-                    f"现价 {close:.1f}。破压力后要等回踩到 {entry:.1f} 再做多，现在不是回踩到位。已等 {wait_bars} 根。",
+                    f"已破压力，等回踩 {entry:.1f}",
+                    f"现价 {live:.1f}（{tf_key}）。大熊：破线后不追第一波，等回踩旧压力（现支撑）{entry:.1f}。"
+                    f"方向已锁定做多，不会中途翻空。{extra}已等 {wait_bars} 根。",
                     False,
                 )
                 bias = "等回踩"
@@ -311,40 +446,54 @@ def _line_mode_signal(price: float, bars: list[object], lot: float) -> tuple[Sig
                 sig = Signal(
                     "line_wait",
                     "LINES",
-                    f"已破线，等反抽 {entry:.1f}",
-                    f"现价 {close:.1f}。破支撑后要等反抽到 {entry:.1f} 再做空，现在还在线下不等于反抽到位。已等 {wait_bars} 根。",
+                    f"已破支撑，等反抽 {entry:.1f}",
+                    f"现价 {live:.1f}（{tf_key}）。大熊：破线后不追第一波，等反抽旧支撑（现压力）{entry:.1f}。"
+                    f"方向已锁定做空，不会中途翻多。{extra}已等 {wait_bars} 根。",
                     False,
                 )
                 bias = "等反抽"
             plan = {"side": pb_side, "entry": entry, "sl": sl, "tp": tp}
-    elif descending:
-        near_up = abs(close - up_now) <= 4.0
-        near_dn = abs(close - dn_now) <= 4.0 or (box_low <= close <= box_high)
+    elif channel_ok:
+        near_up = abs(live - up_now) <= 4.0
+        near_dn = abs(live - dn_now) <= 4.0 or (box_low <= live <= box_high)
         if near_up:
-            entry = up_now; sl = entry + SL_USD; tp = entry - 12.0
-            sig = Signal("line_wait", "LINES", "靠近下降压力，勿追多",
-                         f"压力线 {up_now:.1f}。未收盘突破前不做多，等收盘站上再等回踩。", False)
+            sig = Signal(
+                "line_wait",
+                "LINES",
+                "靠近下降压力，勿追多",
+                f"压力线 {up_now:.1f}（{tf_key}）。通道内不做追多；等收盘连续站上再等回踩。",
+                False,
+            )
             bias = "压力观察"
-            plan = {"side": "short", "entry": entry, "sl": sl, "tp": tp}
+            plan = {"side": "short", "entry": up_now, "sl": up_now + SL_USD, "tp": up_now - 12.0}
         elif near_dn:
-            entry = dn_now; sl = entry - SL_USD; tp = entry + 12.0
-            sig = Signal("line_wait", "LINES", "靠近下降支撑，观察",
-                         f"支撑 {dn_now:.1f} / 需求区 {box_low:.1f}–{box_high:.1f}，等确认K再轻仓多。", False)
+            sig = Signal(
+                "line_wait",
+                "LINES",
+                "靠近下降支撑，观察",
+                f"支撑 {dn_now:.1f} / 需求区 {box_low:.1f}–{box_high:.1f}（{tf_key}）。通道内先观察，等收盘跌破再等反抽。",
+                False,
+            )
             bias = "支撑观察"
-            plan = {"side": "long", "entry": entry, "sl": sl, "tp": tp}
+            plan = {"side": "long", "entry": dn_now, "sl": dn_now - SL_USD, "tp": dn_now + 12.0}
         else:
             mid = (up_now + dn_now) / 2.0
-            zone = "上半区" if close >= mid else "下半区"
-            sig = Signal("line_wait", "LINES", f"下降通道{zone}，等靠线",
-                         f"压力 {up_now:.1f}  支撑 {dn_now:.1f}  当前 {close:.1f}。通道未破，不追。", False)
+            zone = "上半区" if live >= mid else "下半区"
+            sig = Signal(
+                "line_wait",
+                "LINES",
+                f"下降通道{zone}，等靠线",
+                f"压力 {up_now:.1f}  支撑 {dn_now:.1f}  当前 {live:.1f}（{tf_key}）。通道未破，不追。",
+                False,
+            )
             bias = "震荡等待"
     else:
         sig = Signal(
             "line_wait",
             "LINES",
             "通道不明确，观察",
-            f"蓝线只是最近两点连线（上=压力 {up_now:.1f}，下=支撑 {dn_now:.1f}）。"
-            f"当前不是下降通道，收盘跌破下蓝线也不做空。现价 {close:.1f}，先观察。",
+            f"蓝线只是最近两点连线（上=压力 {up_now:.1f}，下=支撑 {dn_now:.1f}，{tf_key}）。"
+            f"当前不是有效下降通道，不做突破单。现价 {live:.1f}。",
             False,
         )
         bias = "观察"
@@ -354,7 +503,7 @@ def _line_mode_signal(price: float, bars: list[object], lot: float) -> tuple[Sig
         "lower_fit": dn_line,
         "up_now": up_now,
         "dn_now": dn_now,
-        "descending": descending,
+        "descending": channel_ok,
         "broke_up": broke_up,
         "broke_dn": broke_dn,
         "box_low": box_low,
@@ -364,6 +513,7 @@ def _line_mode_signal(price: float, bars: list[object], lot: float) -> tuple[Sig
         "suggest_tp": 18.0,
         "plan": plan,
         "n_bars": n,
+        "tf": tf_key,
     }
     return sig, overlay
 
@@ -430,7 +580,7 @@ def build_dashboard(
             )
             line_overlay = None
         else:
-            signal, line_overlay = _line_mode_signal(price, line_bars, clamp_lot(lot))
+            signal, line_overlay = _line_mode_signal(price, line_bars, clamp_lot(lot), tf="M15")
     elif strategy == "asia_box_lines_h1":
         # 用近期 H1（由现有 M15 聚合）画线，不必硬等 20 根
         raw = m15_bars[-240:] if m15_bars else []
@@ -446,24 +596,26 @@ def build_dashboard(
             line_overlay = None
         else:
             line_close = float(getattr(line_bars[-1], "close", None))
-            signal, line_overlay = _line_mode_signal(price, line_bars, clamp_lot(lot))
+            signal, line_overlay = _line_mode_signal(price, line_bars, clamp_lot(lot), tf="H1")
     elif strategy == "asia_box_dual_lines_hwr":
         used_lot = clamp_lot(lot)
-        line_close = m15_close
 
-        # 1) 画线（用 asia_box_lines 的尺度：直接用当前缓存 K 线）
-        line_bars = m15_bars[-120:] if m15_bars else []
+        # 1) 画线腿：H1（更贴近大熊大级别，避免 M15 几分钟多空乱翻）
+        raw = m15_bars[-240:] if m15_bars else []
+        line_bars = aggregate_bars(raw, 60)
+        if line_bars:
+            line_close = float(getattr(line_bars[-1], "close", None))
         if len(line_bars) < MIN_LINE_BARS:
             line_sig = Signal(
                 "line_wait",
                 "LINES",
                 "画线数据不足",
-                f"近期K线仅 {len(line_bars)} 根，至少 {MIN_LINE_BARS} 根即可用近期画线。",
+                f"近期 H1 仅 {len(line_bars)} 根，至少 {MIN_LINE_BARS} 根即可用近期画线。",
                 False,
             )
             line_overlay = None
         else:
-            line_sig, line_overlay = _line_mode_signal(price, line_bars, used_lot)
+            line_sig, line_overlay = _line_mode_signal(price, line_bars, used_lot, tf="H1")
 
         # 2) 高胜率（HWR）
         profile = _profile_for("asia_box_hwr")
@@ -606,10 +758,10 @@ def build_dashboard(
             f"策略 {_strategy_label(strategy)}  |  时段 {session}  |  位置 {zone}\n"
             f"手数 {used_lot}  单笔止损约 ${sl_risk:.0f}\n"
             f"同时运行：\n"
-            f"- 画线（asia_box_lines）\n"
-            f"- 高胜率（asia_box_hwr）\n"
+            f"- 画线（H1，大熊式：2根收盘破+方向锁定+等回踩）\n"
+            f"- 高胜率（M15 亚盘盒子）\n"
             f"{kline_line}\n"
-            f"ADX {adx_txt}  |  RSI(M15) {rsi_txt}  |  M15收盘 {m15_txt}\n"
+            f"ADX {adx_txt}  |  RSI(M15) {rsi_txt}  |  H1收盘 {line_txt}  |  M15 {m15_txt}\n"
             f"建议 {'✓ 可提醒' if entry_ok else '✗ 等待'}"
         )
     else:

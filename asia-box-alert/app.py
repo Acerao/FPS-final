@@ -859,11 +859,10 @@ class App:
             )
             return
 
-        # asia_box_lines: 直接用当前缓存 K线（实际为 M15）
-        # asia_box_lines_h1: 把 M15 聚合成 H1，用于更贴近“小时级画线单”的尺度
-        # asia_box_dual_lines_hwr: 图表按 asia_box_lines（M15）显示
+        # asia_box_lines: M15
+        # asia_box_lines_h1 / dual: H1（更贴近大熊大级别，减少几分钟多空乱翻）
         base_m15 = self.cached_bars[-240:] if self.cached_bars else []
-        if strategy == "asia_box_lines_h1":
+        if strategy in {"asia_box_lines_h1", "asia_box_dual_lines_hwr"}:
             bars = aggregate_bars(base_m15, 60)
         else:
             bars = base_m15

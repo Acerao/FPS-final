@@ -913,17 +913,28 @@ class App:
             return
         w = max(100, self.chart.winfo_width())
         h = max(100, self.chart.winfo_height())
-        left, right, top, bottom = 18, w - 18, 14, h - 24
+        # 底部留出时间轴
+        left, right, top, bottom = 18, w - 18, 14, h - 34
         highs = [float(getattr(b, "high")) for b in bars]
         lows = [float(getattr(b, "low")) for b in bars]
         max_p, min_p = max(highs), min(lows)
         span = max(max_p - min_p, 1.0)
+        line_tf = self._current_line_tf()
 
         def px(i: int) -> float:
             return left + (right - left) * i / max(len(bars) - 1, 1)
 
         def py(v: float) -> float:
             return top + (max_p - v) / span * (bottom - top)
+
+        def _bar_local_ts(b):
+            ts = getattr(b, "ts", None)
+            if ts is None:
+                return None
+            try:
+                return beijing_now(ts)
+            except Exception:
+                return ts
 
         # Candles
         for i, b in enumerate(bars):
@@ -1012,10 +1023,56 @@ class App:
                 self.chart.create_text(right - 6, y_tp - 2, anchor="se", fill=tp_c, text=f"TP {tp:.1f}", font=("Consolas", 9))
                 if side in {"long", "short"}:
                     self.chart.create_text(left + 8, y_e - 2, anchor="sw", fill=entry_c, text=side.upper(), font=("Consolas", 9, "bold"))
+
+        # 时间轴（北京时间）
+        self.chart.create_line(left, bottom + 2, right, bottom + 2, fill="#30363d")
+        n = len(bars)
+        tick_n = 5 if n >= 20 else max(2, min(4, n))
+        tick_idxs = sorted({int(round(i * (n - 1) / (tick_n - 1))) for i in range(tick_n)})
+        first_ts = _bar_local_ts(bars[0])
+        last_ts = _bar_local_ts(bars[-1])
+        multi_day = bool(
+            first_ts is not None
+            and last_ts is not None
+            and getattr(first_ts, "date", lambda: None)() != getattr(last_ts, "date", lambda: None)()
+        )
+        for i in tick_idxs:
+            ts = _bar_local_ts(bars[i])
+            if ts is None:
+                label = f"#{i + 1}"
+            elif multi_day:
+                label = ts.strftime("%m-%d %H:%M")
+            else:
+                label = ts.strftime("%H:%M")
+            x = px(i)
+            self.chart.create_line(x, bottom + 2, x, bottom + 6, fill="#484f58")
+            anchor = "n"
+            if i == tick_idxs[0]:
+                anchor = "nw"
+                x = left
+            elif i == tick_idxs[-1]:
+                anchor = "ne"
+                x = right
+            self.chart.create_text(
+                x,
+                bottom + 8,
+                anchor=anchor,
+                fill="#8b949e",
+                text=label,
+                font=("Consolas", 8),
+            )
+
         self.chart.create_text(left + 6, top + 8, anchor="w", fill="#c9d1d9", text=f"{max_p:.1f}", font=("Consolas", 9))
-        self.chart.create_text(left + 6, bottom - 8, anchor="w", fill="#c9d1d9", text=f"{min_p:.1f}", font=("Consolas", 9))
+        self.chart.create_text(left + 6, bottom - 10, anchor="w", fill="#c9d1d9", text=f"{min_p:.1f}", font=("Consolas", 9))
         bias = ov.get("bias", "等待")
-        self.chart.create_text(right - 4, top + 8, anchor="ne", fill="#f4d35e", text=f"Bias: {bias}", font=("Microsoft YaHei UI", 9, "bold"))
+        self.chart.create_text(
+            right - 4,
+            top + 8,
+            anchor="ne",
+            fill="#f4d35e",
+            text=f"{line_tf} · Bias: {bias}",
+            font=("Microsoft YaHei UI", 9, "bold"),
+        )
 
     def refresh_price(self) -> None:
         if not self.price_busy:

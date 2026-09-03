@@ -346,6 +346,24 @@ def run_selftest(popup: bool = False) -> int:
         else:
             print("[FAIL] 双策略 indicators_text/signal 异常")
             fail += 1
+
+        # 方向冲突：画线要空，高胜率 B 等回踩做多 → 应压住入场
+        from dashboard import _dual_conflict_signal, _signal_side
+        from strategy import Signal as _Sig
+
+        line_short = _Sig("line_short_call", "LINES", "画线做空：反抽到位", "Sell Limit 4427", True)
+        hwr_b_long = _Sig("b_wait_long", "B", "已切 B，等回踩上沿", "等回到 4440 再挂多", True)
+        if _signal_side(line_short) == "short" and _signal_side(hwr_b_long) == "long":
+            conflict = _dual_conflict_signal(line_short, hwr_b_long)
+            if conflict.key == "dual_conflict" and conflict.key not in ENTRY_KEYS:
+                print("[OK] 双策略多空冲突时不弹入场")
+                ok += 1
+            else:
+                print(f"[FAIL] 冲突处理异常 {conflict.key}")
+                fail += 1
+        else:
+            print("[FAIL] 方向识别失败")
+            fail += 1
     except Exception as exc:
         print(f"[SKIP] 双策略自测跳过: {exc}")
 

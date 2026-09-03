@@ -27,6 +27,7 @@ BAR_MS = 30000
 NEWS_MS = 300000
 ALERT_COOLDOWN_SEC = 180
 SAME_ENTRY_SUPPRESS_SEC = 900  # 相同入场价短时不重复弹（15分钟）
+FLIP_COOLDOWN_SEC = 1200  # 多空方向翻转冷却（20分钟），避免几分钟内多空来回弹
 
 
 def load_config() -> dict:
@@ -51,6 +52,8 @@ class App:
         self.last_alert_key = ""
         self.last_alert_at = 0.0
         self._last_entry_alert: dict[str, tuple[float, float]] = {}
+        self._last_alert_side: str | None = None
+        self._last_alert_side_at = 0.0
         self.price_busy = False
         self.bar_busy = False
         self.news_busy = False
@@ -810,6 +813,14 @@ class App:
         if should_alert:
             now_ts = time.time()
             allow = sig.key != self.last_alert_key or now_ts - self.last_alert_at > ALERT_COOLDOWN_SEC
+            side = self._extract_alert_side(sig.key, sig.title, sig.message)
+            if allow and side and self._last_alert_side and side != self._last_alert_side:
+                if now_ts - self._last_alert_side_at < FLIP_COOLDOWN_SEC:
+                    allow = False
+                    self.append_log(
+                        f"【压住】方向刚从 {self._last_alert_side} 翻到 {side}，"
+                        f"{int(FLIP_COOLDOWN_SEC / 60)} 分钟内不重复弹，避免多空来回。"
+                    )
             if allow:
                 # 入场价去重：短时间内相同入场位不重复提醒（尤其 hwr）
                 entry = self._extract_entry_price(sig.message)
@@ -825,11 +836,26 @@ class App:
             if allow:
                 self.last_alert_key = sig.key
                 self.last_alert_at = now_ts
+                if side:
+                    self._last_alert_side = side
+                    self._last_alert_side_at = now_ts
                 stamp = f"现价 {price:.2f}  |  {now:%Y-%m-%d %H:%M:%S}"
                 alert_title = f"{sig.title}  ·  {price:.2f}"
                 alert_body = f"{stamp}\n{sig.message}"
                 self.append_log(f"【提醒】{stamp} | {sig.title} | {sig.message}")
                 popup_alert(alert_title, alert_body, parent=self.root)
+
+    def _extract_alert_side(self, key: str, title: str, message: str) -> str | None:
+        if key in {"a_buy", "b_long", "line_long_call"}:
+            return "long"
+        if key in {"a_sell", "b_short", "line_short_call"}:
+            return "short"
+        text = f"{title} {message}"
+        if "做多" in text or "Buy Limit" in text:
+            return "long"
+        if "做空" in text or "Sell Limit" in text:
+            return "short"
+        return None
 
     def _extract_entry_price(self, message: str) -> float | None:
         """

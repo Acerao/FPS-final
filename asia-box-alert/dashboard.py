@@ -74,52 +74,6 @@ ENTRY_KEYS = {
     "line_short_call",
 }
 
-# 入场或明确偏多/偏空等待，用于双策略冲突判断
-_LONG_KEYS = {
-    "a_buy",
-    "b_long",
-    "b_wait_long",
-    "b_no_chase_long",
-    "hwr_wait_a_long_confirm",
-    "hwr_wait_b_long_confirm",
-    "line_long_call",
-}
-_SHORT_KEYS = {
-    "a_sell",
-    "b_short",
-    "b_wait_short",
-    "b_no_chase_short",
-    "hwr_wait_a_short_confirm",
-    "hwr_wait_b_short_confirm",
-    "line_short_call",
-}
-
-
-def _signal_side(sig: Signal) -> str | None:
-    """long / short / None。等待回踩也算方向偏见。"""
-    if sig.key in _LONG_KEYS:
-        return "long"
-    if sig.key in _SHORT_KEYS:
-        return "short"
-    text = f"{sig.title or ''} {sig.message or ''}"
-    if any(k in text for k in ("做多", "偏多", "回踩上沿", "等回踩上沿", "B 做多")):
-        return "long"
-    if any(k in text for k in ("做空", "偏空", "反抽下沿", "等反抽", "B 做空")):
-        return "short"
-    return None
-
-
-def _dual_conflict_signal(line_sig: Signal, hwr_sig: Signal) -> Signal:
-    return Signal(
-        "dual_conflict",
-        "WAIT",
-        "两套意见冲突，先空仓",
-        f"[画线] {line_sig.title}\n{line_sig.message}\n\n"
-        f"[高胜率] {hwr_sig.title}\n{hwr_sig.message}\n\n"
-        f"方向不一致时不弹入场。等两套同向，或只保留一套策略再盯。",
-        False,
-    )
-
 
 @dataclass
 class Dashboard:
@@ -527,22 +481,14 @@ def build_dashboard(
 
         line_is_entry = line_sig.key in ENTRY_KEYS
         hwr_is_entry = hwr_sig.key in ENTRY_KEYS
-        line_side = _signal_side(line_sig)
-        hwr_side = _signal_side(hwr_sig)
-        sides_conflict = (
-            line_side is not None
-            and hwr_side is not None
-            and line_side != hwr_side
-        )
 
-        # 双策略求稳：方向冲突时绝不弹入场（避免几分钟多空来回）
-        if sides_conflict:
-            signal = _dual_conflict_signal(line_sig, hwr_sig)
-        elif line_is_entry and hwr_is_entry:
+        # 选一个“真正能提醒入场”的信号作为主提醒
+        if line_is_entry and hwr_is_entry:
+            # 同时触发：优先返回高胜率 key，但消息里把两者都写清楚
             signal = Signal(
                 hwr_sig.key,
                 _strategy_label(strategy),
-                "双触发：画线 + 高胜率同向",
+                "双触发：画线 + 高胜率",
                 f"[画线] {line_sig.title}\n{line_sig.message}\n\n[高胜率] {hwr_sig.title}\n{hwr_sig.message}",
                 True,
             )
@@ -551,19 +497,20 @@ def build_dashboard(
                 hwr_sig.key,
                 hwr_sig.mode,
                 f"高胜率：{hwr_sig.title}",
-                f"[高胜率] {hwr_sig.message}\n\n[画线观察] {line_sig.title}。方向不冲突，先按高胜率限价，不成交不要追。",
+                f"[高胜率] {hwr_sig.message}\n\n[画线观察] {line_sig.title}。两套都在跑，先按高胜率限价，不成交不要追。",
                 True,
             )
         elif line_is_entry:
-            # 高胜率虽未入场，但已有明确相反偏见时上面已拦；这里只剩同向或无偏见
             signal = Signal(
                 line_sig.key,
                 line_sig.mode,
                 f"画线：{line_sig.title}",
-                f"[画线] {line_sig.message}\n\n[高胜率] {hwr_sig.title}\n{hwr_sig.message}",
+                f"[画线] {line_sig.message}\n\n[高胜率不同意见] {hwr_sig.title}。{hwr_sig.message}\n"
+                f"高胜率这时不做。画线那笔也是限价回踩，现价没回到入场位就不要市价追。",
                 True,
             )
         else:
+            # 都未入场：优先返回高胜率提示（若需要也能看到画线提示）
             signal = Signal(
                 "dual_wait",
                 _strategy_label(strategy),

@@ -4,3 +4,7 @@ __pycache__/
 .venv/
 price_ticks.json
 last_spot.json
+trades.json
+trades.csv
+error.log
+local_mirror.txt

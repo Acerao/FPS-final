@@ -19,6 +19,8 @@ KEEP_NAMES = {
     "config.json",
     "price_ticks.json",
     "last_spot.json",
+    "trades.json",
+    "trades.csv",
     "error.log",
     "local_mirror.txt",
 }

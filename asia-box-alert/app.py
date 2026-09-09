@@ -262,6 +262,8 @@ class App:
             activeforeground=fg,
             command=self.toggle_topmost,
         ).pack(side="left")
+        tk.Button(opts, text="记一笔", command=self.open_trade_log).pack(side="right", padx=4)
+        tk.Button(opts, text="今日复盘", command=self.show_trade_summary).pack(side="right", padx=4)
         tk.Button(opts, text="测试提醒", command=self.test_alert).pack(side="right", padx=4)
         tk.Button(opts, text="更新程序", command=self.update_program).pack(side="right", padx=4)
         tk.Button(opts, text="运行自测", command=self.run_selftest).pack(side="right")
@@ -1229,6 +1231,134 @@ class App:
                 f"GitHub 拉不到（可稍后重试）。\n{sync_msg}\n\n{exc}",
                 parent=self.root,
             )
+
+    def open_trade_log(self) -> None:
+        """手动记一笔成交（不改策略、不下单）。"""
+        import tkinter as tk
+        from tkinter import messagebox
+
+        from trade_log import add_trade, estimate_pnl
+
+        win = tk.Toplevel(self.root)
+        win.title("记一笔")
+        win.configure(bg="#111318")
+        win.attributes("-topmost", True)
+        win.geometry("420x360")
+        muted = "#9aa3b2"
+        fg = "#f5f5f5"
+
+        side_var = tk.StringVar(value="long")
+        entry_var = tk.StringVar(value=f"{self.last_price:.1f}" if self.last_price else "")
+        exit_var = tk.StringVar(value="")
+        sl_var = tk.StringVar(value="")
+        tp_var = tk.StringVar(value="")
+        lot_var = tk.StringVar(value=f"{self._current_lot():.2f}")
+        result_var = tk.StringVar(value="open")
+        pnl_var = tk.StringVar(value="")
+        note_var = tk.StringVar(value="")
+
+        form = tk.Frame(win, bg="#111318")
+        form.pack(fill="both", expand=True, padx=14, pady=12)
+
+        def row(label: str, widget, r: int) -> None:
+            tk.Label(form, text=label, fg=muted, bg="#111318", width=8, anchor="w").grid(
+                row=r, column=0, sticky="w", pady=3
+            )
+            widget.grid(row=r, column=1, sticky="we", pady=3)
+
+        row("方向", tk.OptionMenu(form, side_var, "long", "short"), 0)
+        row("入场", tk.Entry(form, textvariable=entry_var, width=18), 1)
+        row("出场", tk.Entry(form, textvariable=exit_var, width=18), 2)
+        row("止损", tk.Entry(form, textvariable=sl_var, width=18), 3)
+        row("止盈", tk.Entry(form, textvariable=tp_var, width=18), 4)
+        row("手数", tk.Entry(form, textvariable=lot_var, width=18), 5)
+        row("结果", tk.OptionMenu(form, result_var, "open", "win", "loss", "be"), 6)
+        row("盈亏$", tk.Entry(form, textvariable=pnl_var, width=18), 7)
+        row("备注", tk.Entry(form, textvariable=note_var, width=28), 8)
+        form.columnconfigure(1, weight=1)
+
+        tip = tk.Label(
+            win,
+            text="出场填了可点「估算盈亏」。结果：open未平 / win盈 / loss亏 / be平。",
+            fg=muted,
+            bg="#111318",
+            font=("Microsoft YaHei UI", 8),
+            wraplength=380,
+            justify="left",
+        )
+        tip.pack(fill="x", padx=14)
+
+        def _f(raw: str) -> float | None:
+            raw = (raw or "").strip()
+            if not raw:
+                return None
+            try:
+                return float(raw)
+            except ValueError:
+                return None
+
+        def do_estimate() -> None:
+            entry = _f(entry_var.get())
+            exit_px = _f(exit_var.get())
+            lot = _f(lot_var.get()) or self._current_lot()
+            if entry is None or exit_px is None:
+                messagebox.showinfo("记一笔", "请先填入场和出场", parent=win)
+                return
+            pnl = estimate_pnl(side_var.get(), entry, exit_px, lot)
+            pnl_var.set(f"{pnl:.0f}")
+            if result_var.get() == "open":
+                if pnl > 0.5:
+                    result_var.set("win")
+                elif pnl < -0.5:
+                    result_var.set("loss")
+                else:
+                    result_var.set("be")
+
+        def do_save() -> None:
+            entry = _f(entry_var.get())
+            if entry is None:
+                messagebox.showerror("记一笔", "入场价无效", parent=win)
+                return
+            try:
+                rec = add_trade(
+                    strategy=self.strategy_var.get() or "",
+                    side=side_var.get(),
+                    entry=entry,
+                    exit=_f(exit_var.get()),
+                    sl=_f(sl_var.get()),
+                    tp=_f(tp_var.get()),
+                    lot=_f(lot_var.get()) or self._current_lot(),
+                    pnl_usd=_f(pnl_var.get()),
+                    result=result_var.get(),
+                    note=note_var.get(),
+                    asia_h=self.cfg.get("asia_h"),
+                    asia_l=self.cfg.get("asia_l"),
+                )
+            except Exception as exc:
+                messagebox.showerror("记一笔", f"保存失败：{exc}", parent=win)
+                return
+            side_cn = "多" if rec.side == "long" else "空"
+            pnl_txt = "--" if rec.pnl_usd is None else f"${rec.pnl_usd:+.0f}"
+            self.append_log(
+                f"已记一笔：{side_cn} {rec.entry:.1f} → {rec.exit if rec.exit is not None else '--'} "
+                f"{pnl_txt} [{rec.result}]"
+            )
+            win.destroy()
+
+        btns = tk.Frame(win, bg="#111318")
+        btns.pack(fill="x", padx=14, pady=10)
+        tk.Button(btns, text="估算盈亏", command=do_estimate).pack(side="left")
+        tk.Button(btns, text="保存", command=do_save).pack(side="right", padx=4)
+        tk.Button(btns, text="取消", command=win.destroy).pack(side="right")
+
+    def show_trade_summary(self) -> None:
+        from tkinter import messagebox
+
+        from trade_log import format_summary_text
+
+        text = format_summary_text()
+        self.append_log(text.replace("\n", " | "))
+        messagebox.showinfo("今日复盘", text, parent=self.root)
 
     def test_alert(self) -> None:
         now = beijing_now()

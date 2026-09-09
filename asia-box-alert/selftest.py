@@ -438,12 +438,42 @@ def run_selftest(popup: bool = False) -> int:
     else:
         print("[FAIL] 同步保留规则")
         fail += 1
-    if "price_ticks.json" in KEEP_NAMES:
-        print("[OK] 不会覆盖本地采样")
+    if "price_ticks.json" in KEEP_NAMES and "trades.json" in KEEP_NAMES:
+        print("[OK] 不会覆盖本地采样与成交记录")
         ok += 1
     else:
-        print("[FAIL] KEEP_NAMES 缺 price_ticks.json")
+        print("[FAIL] KEEP_NAMES 缺 price_ticks.json 或 trades.json")
         fail += 1
+
+    print("\n=== 成交记录自测 ===")
+    import tempfile
+    import trade_log as tl
+
+    tmp = Path(tempfile.mkdtemp())
+    old_json, old_csv = tl.TRADES_PATH, tl.CSV_PATH
+    tl.TRADES_PATH = tmp / "trades.json"
+    tl.CSV_PATH = tmp / "trades.csv"
+    try:
+        rec = tl.add_trade(
+            strategy="asia_box_hwr",
+            side="long",
+            entry=4400.0,
+            exit=4412.0,
+            sl=4385.0,
+            tp=4412.0,
+            lot=0.02,
+            note="自测",
+            when=noon,
+        )
+        s = tl.summary(noon)
+        if rec.result == "win" and s["count"] == 1 and s["pnl_usd"] > 0 and tl.CSV_PATH.exists():
+            print("[OK] 记一笔可写 json/csv，并统计当日盈亏")
+            ok += 1
+        else:
+            print(f"[FAIL] 成交记录异常: {rec} {s}")
+            fail += 1
+    finally:
+        tl.TRADES_PATH, tl.CSV_PATH = old_json, old_csv
     ok_sync, msg = sync_to_mirror()
     if (not ok_sync) and "非 Windows" in msg:
         print("[OK] 云端不会误建 E:\\gold 目录")

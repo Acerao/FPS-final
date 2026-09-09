@@ -1350,7 +1350,7 @@ class App:
             exit_px = _f(exit_var.get())
             lot = _f(lot_var.get()) or self._current_lot()
             if entry is None or exit_px is None:
-                messagebox.showinfo("记一笔", "请先填入场和出场", parent=win)
+                messagebox.showinfo("手动补记", "请先填入场和出场", parent=win)
                 return
             pnl = estimate_pnl(side_var.get(), entry, exit_px, lot)
             pnl_var.set(f"{pnl:.0f}")
@@ -1365,7 +1365,7 @@ class App:
         def do_save() -> None:
             entry = _f(entry_var.get())
             if entry is None:
-                messagebox.showerror("记一笔", "入场价无效", parent=win)
+                messagebox.showerror("手动补记", "入场价无效", parent=win)
                 return
             try:
                 rec = add_trade(
@@ -1381,14 +1381,15 @@ class App:
                     note=note_var.get(),
                     asia_h=self.cfg.get("asia_h"),
                     asia_l=self.cfg.get("asia_l"),
+                    source="manual",
                 )
             except Exception as exc:
-                messagebox.showerror("记一笔", f"保存失败：{exc}", parent=win)
+                messagebox.showerror("手动补记", f"保存失败：{exc}", parent=win)
                 return
             side_cn = "多" if rec.side == "long" else "空"
             pnl_txt = "--" if rec.pnl_usd is None else f"${rec.pnl_usd:+.0f}"
             self.append_log(
-                f"已记一笔：{side_cn} {rec.entry:.1f} → {rec.exit if rec.exit is not None else '--'} "
+                f"已手动补记：{side_cn} {rec.entry:.1f} → {rec.exit if rec.exit is not None else '--'} "
                 f"{pnl_txt} [{rec.result}]"
             )
             win.destroy()

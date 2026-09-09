@@ -93,6 +93,7 @@ class App:
         self.l_var = tk.StringVar(value=str(self.cfg.get("asia_l", "")))
         self.p_var = tk.StringVar(value=str(self.cfg.get("manual_price", "")))
         self.topmost_var = tk.BooleanVar(value=bool(self.cfg.get("topmost", False)))
+        self.auto_log_var = tk.BooleanVar(value=bool(self.cfg.get("auto_log_trades", True)))
         self.strategy_var = tk.StringVar(value=self.cfg.get("strategy", "asia_box"))
         self.lot_var = tk.StringVar(value=str(self.cfg.get("lot", "0.02")))
         _ltf = str(self.cfg.get("line_tf", "M15")).upper()
@@ -262,7 +263,19 @@ class App:
             activeforeground=fg,
             command=self.toggle_topmost,
         ).pack(side="left")
-        tk.Button(opts, text="记一笔", command=self.open_trade_log).pack(side="right", padx=4)
+        tk.Checkbutton(
+            opts,
+            text="提醒自动记",
+            variable=self.auto_log_var,
+            bg="#111318",
+            fg=fg,
+            selectcolor="#111318",
+            activebackground="#111318",
+            activeforeground=fg,
+            command=self.toggle_auto_log,
+        ).pack(side="left", padx=(10, 0))
+        tk.Button(opts, text="手动补记", command=self.open_trade_log).pack(side="right", padx=4)
+        tk.Button(opts, text="平最近一笔", command=self.close_latest_trade).pack(side="right", padx=4)
         tk.Button(opts, text="今日复盘", command=self.show_trade_summary).pack(side="right", padx=4)
         tk.Button(opts, text="测试提醒", command=self.test_alert).pack(side="right", padx=4)
         tk.Button(opts, text="更新程序", command=self.update_program).pack(side="right", padx=4)
@@ -359,6 +372,12 @@ class App:
         self.root.attributes("-topmost", topmost)
         self.cfg["topmost"] = topmost
         save_config(self.cfg)
+
+    def toggle_auto_log(self) -> None:
+        enabled = bool(self.auto_log_var.get())
+        self.cfg["auto_log_trades"] = enabled
+        save_config(self.cfg)
+        self.append_log("提醒自动记：开" if enabled else "提醒自动记：关（仍可用手动补记）")
 
     def _on_unmap(self, _evt=None) -> None:
         """窗口被最小化/隐藏后：显示极简金价框。"""
@@ -862,7 +881,36 @@ class App:
                 alert_title = f"{sig.title}  ·  {price:.2f}"
                 alert_body = f"{stamp}\n{sig.message}"
                 self.append_log(f"【提醒】{stamp} | {sig.title} | {sig.message}")
+                if bool(self.auto_log_var.get()) and sig.key in ENTRY_KEYS:
+                    self._auto_log_alert(sig.key, sig.message, price, now)
                 popup_alert(alert_title, alert_body, parent=self.root)
+
+    def _auto_log_alert(self, alert_key: str, message: str, price: float, now) -> None:
+        from trade_log import auto_log_from_alert
+
+        try:
+            rec = auto_log_from_alert(
+                alert_key=alert_key,
+                message=message,
+                strategy=self.strategy_var.get() or "",
+                lot=self._current_lot(),
+                asia_h=self.cfg.get("asia_h"),
+                asia_l=self.cfg.get("asia_l"),
+                grid_side=self.grid_side_var.get() or self.cfg.get("grid_side"),
+                price=price,
+                when=now,
+            )
+        except Exception as exc:
+            self.append_log(f"自动记失败：{exc}")
+            return
+        if rec is None:
+            return
+        side_cn = "多" if rec.side == "long" else "空"
+        if rec.result == "open":
+            self.append_log(f"【自动记】开仓 {side_cn} {rec.entry:.1f} SL {rec.sl} TP {rec.tp}")
+        else:
+            pnl = "--" if rec.pnl_usd is None else f"${rec.pnl_usd:+.0f}"
+            self.append_log(f"【自动记】平仓 {side_cn} → {rec.exit} {pnl} [{rec.result}]")
 
     def _extract_entry_price(self, message: str) -> float | None:
         """
@@ -1240,7 +1288,7 @@ class App:
         from trade_log import add_trade, estimate_pnl
 
         win = tk.Toplevel(self.root)
-        win.title("记一笔")
+        win.title("手动补记")
         win.configure(bg="#111318")
         win.attributes("-topmost", True)
         win.geometry("420x360")
@@ -1359,6 +1407,24 @@ class App:
         text = format_summary_text()
         self.append_log(text.replace("\n", " | "))
         messagebox.showinfo("今日复盘", text, parent=self.root)
+
+    def close_latest_trade(self) -> None:
+        from tkinter import messagebox
+
+        from trade_log import close_latest_open
+
+        price = self.last_price
+        if price is None:
+            messagebox.showinfo("平最近一笔", "还没有现价，无法平仓补记", parent=self.root)
+            return
+        rec = close_latest_open(exit_px=float(price), note="手动平最近一笔")
+        if rec is None:
+            messagebox.showinfo("平最近一笔", "没有未平仓记录", parent=self.root)
+            return
+        side_cn = "多" if rec.side == "long" else "空"
+        pnl = "--" if rec.pnl_usd is None else f"${rec.pnl_usd:+.0f}"
+        self.append_log(f"已平最近一笔：{side_cn} {rec.entry:.1f}→{rec.exit:.1f} {pnl} [{rec.result}]")
+        messagebox.showinfo("平最近一笔", f"{side_cn} {rec.entry:.1f}→{rec.exit:.1f}\n盈亏 {pnl}", parent=self.root)
 
     def test_alert(self) -> None:
         now = beijing_now()

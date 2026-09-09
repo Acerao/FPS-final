@@ -472,6 +472,33 @@ def run_selftest(popup: bool = False) -> int:
         else:
             print(f"[FAIL] 成交记录异常: {rec} {s}")
             fail += 1
+        auto = tl.auto_log_from_alert(
+            alert_key="b_long",
+            message="Buy Limit 4416，SL 4401，TP 4434，手数 0.02",
+            strategy="asia_box_hwr",
+            lot=0.02,
+            when=noon,
+        )
+        if auto and auto.result == "open" and auto.source == "alert" and abs(auto.entry - 4416) < 0.1:
+            print("[OK] 入场提醒可自动记开仓")
+            ok += 1
+        else:
+            print(f"[FAIL] 自动记开仓异常: {auto}")
+            fail += 1
+        closed = tl.auto_log_from_alert(
+            alert_key="grid_flatten",
+            message="评估期 01:45 前把本轮网格全部平掉。",
+            strategy="scale_grid",
+            lot=0.02,
+            price=4420.0,
+            when=noon,
+        )
+        if closed and closed.result in {"win", "loss", "be"} and closed.exit == 4420.0:
+            print("[OK] 平仓提醒可自动平最近一笔")
+            ok += 1
+        else:
+            print(f"[FAIL] 自动平仓异常: {closed}")
+            fail += 1
     finally:
         tl.TRADES_PATH, tl.CSV_PATH = old_json, old_csv
     ok_sync, msg = sync_to_mirror()

@@ -27,6 +27,19 @@ BAR_MS = 30000
 NEWS_MS = 300000
 ALERT_COOLDOWN_SEC = 180
 SAME_ENTRY_SUPPRESS_SEC = 900  # 相同入场价短时不重复弹（15分钟）
+# 北京时间静默：凌晨 02:00（含）到 09:00（不含）不弹窗
+QUIET_START_HOUR = 2
+QUIET_END_HOUR = 9
+
+
+def alert_gate_open(now=None, enabled: bool = True) -> tuple[bool, str]:
+    """是否允许弹窗提醒。返回 (允许?, 原因)。"""
+    if not enabled:
+        return False, "已关闭提醒"
+    t = beijing_now(now).time()
+    if QUIET_START_HOUR <= t.hour < QUIET_END_HOUR:
+        return False, f"{QUIET_START_HOUR:02d}:00–{QUIET_END_HOUR:02d}:00 静默"
+    return True, ""
 
 
 def load_config() -> dict:
@@ -94,6 +107,8 @@ class App:
         self.p_var = tk.StringVar(value=str(self.cfg.get("manual_price", "")))
         self.topmost_var = tk.BooleanVar(value=bool(self.cfg.get("topmost", False)))
         self.auto_log_var = tk.BooleanVar(value=bool(self.cfg.get("auto_log_trades", True)))
+        # alerts_enabled 默认开；一键关提醒会关掉
+        self.alerts_enabled_var = tk.BooleanVar(value=bool(self.cfg.get("alerts_enabled", True)))
         self.strategy_var = tk.StringVar(value=self.cfg.get("strategy", "asia_box"))
         self.lot_var = tk.StringVar(value=str(self.cfg.get("lot", "0.02")))
         _ltf = str(self.cfg.get("line_tf", "M15")).upper()
@@ -274,6 +289,18 @@ class App:
             activeforeground=fg,
             command=self.toggle_auto_log,
         ).pack(side="left", padx=(10, 0))
+        tk.Checkbutton(
+            opts,
+            text="弹窗提醒",
+            variable=self.alerts_enabled_var,
+            bg="#111318",
+            fg=fg,
+            selectcolor="#111318",
+            activebackground="#111318",
+            activeforeground=fg,
+            command=self.toggle_alerts_enabled,
+        ).pack(side="left", padx=(10, 0))
+        tk.Button(opts, text="一键关提醒", command=self.mute_all_alerts).pack(side="left", padx=(8, 0))
         tk.Button(opts, text="手动补记", command=self.open_trade_log).pack(side="right", padx=4)
         tk.Button(opts, text="平最近一笔", command=self.close_latest_trade).pack(side="right", padx=4)
         tk.Button(opts, text="今日复盘", command=self.show_trade_summary).pack(side="right", padx=4)
@@ -378,6 +405,19 @@ class App:
         self.cfg["auto_log_trades"] = enabled
         save_config(self.cfg)
         self.append_log("提醒自动记：开" if enabled else "提醒自动记：关（仍可用手动补记）")
+
+    def toggle_alerts_enabled(self) -> None:
+        enabled = bool(self.alerts_enabled_var.get())
+        self.cfg["alerts_enabled"] = enabled
+        save_config(self.cfg)
+        self.append_log("弹窗提醒：开" if enabled else "弹窗提醒：已关（界面仍更新，不弹窗）")
+
+    def mute_all_alerts(self) -> None:
+        """一键关闭所有弹窗提醒。"""
+        self.alerts_enabled_var.set(False)
+        self.cfg["alerts_enabled"] = False
+        save_config(self.cfg)
+        self.append_log("已一键关闭所有提醒（勾选「弹窗提醒」可重新打开）")
 
     def _on_unmap(self, _evt=None) -> None:
         """窗口被最小化/隐藏后：显示极简金价框。"""
@@ -845,12 +885,14 @@ class App:
         self.last_price = price
 
         self.price_var.set(f"{price:,.2f}")
-        self.tick_var.set(f"实时 {now:%H:%M:%S}{delta}  |  时段 {dash.session}")
+        gate_ok, gate_reason = alert_gate_open(now, bool(self.alerts_enabled_var.get()))
+        quiet_tag = "" if gate_ok else f"  |  静音·{gate_reason}"
+        self.tick_var.set(f"实时 {now:%H:%M:%S}{delta}  |  时段 {dash.session}{quiet_tag}")
         self.mode_var.set(f"{dash.signal.mode} · {dash.signal.title}")
         self.indicators_var.set(dash.indicators_text)
         self.news_var.set(f"📰 {dash.news.summary}\n{dash.news.detail}")
         self.msg_var.set(dash.signal.message)
-        self.status_var.set(f"{now:%H:%M:%S}  {source}")
+        self.status_var.set(f"{now:%H:%M:%S}  {source}" + ("" if gate_ok else f"  |  {gate_reason}"))
         self._draw_chart(dash)
 
         sig = dash.signal
@@ -862,6 +904,12 @@ class App:
         if should_alert:
             now_ts = time.time()
             allow = sig.key != self.last_alert_key or now_ts - self.last_alert_at > ALERT_COOLDOWN_SEC
+            if allow and not gate_ok:
+                # 手动关提醒 / 02:00–09:00：只写日志，不弹窗、不自动记
+                self.last_alert_key = sig.key
+                self.last_alert_at = now_ts
+                self.append_log(f"【静音跳过】{gate_reason} | {sig.title}")
+                allow = False
             if allow:
                 # 入场价去重：短时间内相同入场位不重复提醒（尤其 hwr）
                 entry = self._extract_entry_price(sig.message)

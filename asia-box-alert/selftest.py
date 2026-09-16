@@ -512,6 +512,23 @@ def run_selftest(popup: bool = False) -> int:
         print(f"[FAIL] {msg}")
         fail += 1
 
+    print("\n=== 提醒静音自测 ===")
+    from datetime import datetime as _dt
+    from app import alert_gate_open
+    from tzutil import BEIJING as _BJ
+
+    quiet = _dt(2026, 8, 17, 3, 30, tzinfo=_BJ)
+    day = _dt(2026, 8, 17, 15, 0, tzinfo=_BJ)
+    ok_q, reason_q = alert_gate_open(quiet, True)
+    ok_d, _ = alert_gate_open(day, True)
+    ok_off, reason_off = alert_gate_open(day, False)
+    if (not ok_q) and "静默" in reason_q and ok_d and (not ok_off) and "关闭" in reason_off:
+        print("[OK] 02:00–09:00 静默，白天可提醒，手动关提醒生效")
+        ok += 1
+    else:
+        print(f"[FAIL] 提醒门控异常: quiet={ok_q}/{reason_q} day={ok_d} off={ok_off}/{reason_off}")
+        fail += 1
+
     print("\n=== 等距网格自测 ===")
     from scale_grid import GridState, evaluate_grid
 

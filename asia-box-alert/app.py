@@ -11,7 +11,7 @@ import threading
 import time
 from pathlib import Path
 
-from alerts import popup_alert
+from alerts import close_all_alert_windows, popup_alert
 from bar_source import get_indicator_bars
 from dashboard import ENTRY_KEYS, MIN_LINE_BARS, build_dashboard
 from gold_feed import asia_high_low, fetch_spot, last_closed_m15, load_spot_cache, save_spot_cache, aggregate_bars
@@ -32,10 +32,8 @@ QUIET_START_HOUR = 2
 QUIET_END_HOUR = 9
 
 
-def alert_gate_open(now=None, enabled: bool = True) -> tuple[bool, str]:
-    """是否允许弹窗提醒。返回 (允许?, 原因)。"""
-    if not enabled:
-        return False, "已关闭提醒"
+def alert_gate_open(now=None) -> tuple[bool, str]:
+    """是否允许弹窗提醒（仅时段门控）。返回 (允许?, 原因)。"""
     t = beijing_now(now).time()
     if QUIET_START_HOUR <= t.hour < QUIET_END_HOUR:
         return False, f"{QUIET_START_HOUR:02d}:00–{QUIET_END_HOUR:02d}:00 静默"
@@ -107,8 +105,6 @@ class App:
         self.p_var = tk.StringVar(value=str(self.cfg.get("manual_price", "")))
         self.topmost_var = tk.BooleanVar(value=bool(self.cfg.get("topmost", False)))
         self.auto_log_var = tk.BooleanVar(value=bool(self.cfg.get("auto_log_trades", True)))
-        # alerts_enabled 默认开；一键关提醒会关掉
-        self.alerts_enabled_var = tk.BooleanVar(value=bool(self.cfg.get("alerts_enabled", True)))
         self.strategy_var = tk.StringVar(value=self.cfg.get("strategy", "asia_box"))
         self.lot_var = tk.StringVar(value=str(self.cfg.get("lot", "0.02")))
         _ltf = str(self.cfg.get("line_tf", "M15")).upper()
@@ -289,18 +285,7 @@ class App:
             activeforeground=fg,
             command=self.toggle_auto_log,
         ).pack(side="left", padx=(10, 0))
-        tk.Checkbutton(
-            opts,
-            text="弹窗提醒",
-            variable=self.alerts_enabled_var,
-            bg="#111318",
-            fg=fg,
-            selectcolor="#111318",
-            activebackground="#111318",
-            activeforeground=fg,
-            command=self.toggle_alerts_enabled,
-        ).pack(side="left", padx=(10, 0))
-        tk.Button(opts, text="一键关提醒", command=self.mute_all_alerts).pack(side="left", padx=(8, 0))
+        tk.Button(opts, text="关闭全部弹窗", command=self.close_all_popups).pack(side="left", padx=(8, 0))
         tk.Button(opts, text="手动补记", command=self.open_trade_log).pack(side="right", padx=4)
         tk.Button(opts, text="平最近一笔", command=self.close_latest_trade).pack(side="right", padx=4)
         tk.Button(opts, text="今日复盘", command=self.show_trade_summary).pack(side="right", padx=4)
@@ -406,18 +391,10 @@ class App:
         save_config(self.cfg)
         self.append_log("提醒自动记：开" if enabled else "提醒自动记：关（仍可用手动补记）")
 
-    def toggle_alerts_enabled(self) -> None:
-        enabled = bool(self.alerts_enabled_var.get())
-        self.cfg["alerts_enabled"] = enabled
-        save_config(self.cfg)
-        self.append_log("弹窗提醒：开" if enabled else "弹窗提醒：已关（界面仍更新，不弹窗）")
-
-    def mute_all_alerts(self) -> None:
-        """一键关闭所有弹窗提醒。"""
-        self.alerts_enabled_var.set(False)
-        self.cfg["alerts_enabled"] = False
-        save_config(self.cfg)
-        self.append_log("已一键关闭所有提醒（勾选「弹窗提醒」可重新打开）")
+    def close_all_popups(self) -> None:
+        """一键关掉当前所有置顶提醒窗（不是禁止以后再弹）。"""
+        n = close_all_alert_windows()
+        self.append_log(f"已关闭全部弹窗（{n} 个）" if n else "当前没有未关的提醒窗")
 
     def _on_unmap(self, _evt=None) -> None:
         """窗口被最小化/隐藏后：显示极简金价框。"""
@@ -885,7 +862,7 @@ class App:
         self.last_price = price
 
         self.price_var.set(f"{price:,.2f}")
-        gate_ok, gate_reason = alert_gate_open(now, bool(self.alerts_enabled_var.get()))
+        gate_ok, gate_reason = alert_gate_open(now)
         quiet_tag = "" if gate_ok else f"  |  静音·{gate_reason}"
         self.tick_var.set(f"实时 {now:%H:%M:%S}{delta}  |  时段 {dash.session}{quiet_tag}")
         self.mode_var.set(f"{dash.signal.mode} · {dash.signal.title}")
@@ -905,7 +882,7 @@ class App:
             now_ts = time.time()
             allow = sig.key != self.last_alert_key or now_ts - self.last_alert_at > ALERT_COOLDOWN_SEC
             if allow and not gate_ok:
-                # 手动关提醒 / 02:00–09:00：只写日志，不弹窗、不自动记
+                # 02:00–09:00：只写日志，不弹窗、不自动记
                 self.last_alert_key = sig.key
                 self.last_alert_at = now_ts
                 self.append_log(f"【静音跳过】{gate_reason} | {sig.title}")
